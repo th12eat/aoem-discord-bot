@@ -1,0 +1,11 @@
+# secrets — never commit the real token
+.env
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+.claude/
