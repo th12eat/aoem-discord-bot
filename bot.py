@@ -61,6 +61,10 @@ _ALLIANCE_CHOICES = [app_commands.Choice(name=f"{v[0]} ({k})", value=k)
 @bot.event
 async def on_ready():
     log.info("Logged in as %s (id: %s)", bot.user, bot.user.id)
+    # register the persistent board button so clicks work after a restart
+    if not getattr(bot, "_board_view_added", False):
+        bot.add_view(BoardView())
+        bot._board_view_added = True
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash command(s).", len(synced))
@@ -330,7 +334,48 @@ async def scheduler_tick():
         _fired.clear()
 
 
-# ── board channel: today's + tomorrow's, labeled by scope ────────────────────
+# ── "My Alliance Events" button (persistent) ─────────────────────────────────
+class BoardView(discord.ui.View):
+    """Attached to the public board. The board itself shows only server-wide
+    events; this button reveals the clicker's OWN alliance events, ephemerally."""
+
+    def __init__(self):
+        super().__init__(timeout=None)  # persistent across restarts
+
+    @discord.ui.button(label="My Alliance Events", emoji="🔎",
+                       style=discord.ButtonStyle.primary,
+                       custom_id="board:my_alliance_events")
+    async def my_events(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from helpers import member_alliances, r4_alliances
+        keys = member_alliances(interaction.user) | r4_alliances(interaction.user)
+        if not keys:
+            return await interaction.response.send_message(
+                "You're not in an alliance I have events for. Server-wide events are on the board above.",
+                ephemeral=True)
+        now = datetime.now(timezone.utc)
+        d0s, d0e = sched.utc_day_bounds(now)
+        d1s, d1e = sched.utc_day_bounds(now + timedelta(days=1))
+        evs = [e for e in store.events_for_guild(interaction.guild_id)
+               if e.get("scope") in keys]
+
+        def block(title, start, end):
+            pairs = sched.occurrences_for_events(evs, start, end)
+            if not pairs:
+                return f"__{title}__\n*(none)*"
+            rows = "\n".join(
+                f"• {ts(dt,'t')} — [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}** ({ts(dt,'R')})"
+                for dt, e in pairs)
+            return f"__{title}__\n{rows}"
+
+        names = ", ".join(sorted(keys))
+        await interaction.response.send_message(
+            f"🔎 **Your alliance events** ({names})\n\n"
+            f"{block('Today (UTC)', d0s, d0e)}\n\n"
+            f"{block('Tomorrow (UTC)', d1s, d1e)}",
+            ephemeral=True)
+
+
+# ── board channel: server-wide events only (alliance events via the button) ──
 async def refresh_board(guild: discord.Guild):
     cfg = store.guild_config(guild.id)
     chan_id = cfg.get("board_channel_id")
@@ -340,31 +385,34 @@ async def refresh_board(guild: discord.Guild):
     now = datetime.now(timezone.utc)
     d0s, d0e = sched.utc_day_bounds(now)
     d1s, d1e = sched.utc_day_bounds(now + timedelta(days=1))
-    evs = store.events_for_guild(guild.id)
+    # board is PUBLIC → show only server-wide events; alliance events are private
+    evs = [e for e in store.events_for_guild(guild.id)
+           if e.get("scope", SERVER_SCOPE) == SERVER_SCOPE]
 
     def block(title, start, end):
         pairs = sched.occurrences_for_events(evs, start, end)
         if not pairs:
             return f"__{title}__\n*(none)*"
         rows = "\n".join(
-            f"• {ts(dt, 't')} — [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}** ({ts(dt,'R')})"
+            f"• {ts(dt, 't')} — **{e['name']}** ({ts(dt,'R')})"
             for dt, e in pairs)
         return f"__{title}__\n{rows}"
 
-    content = (f"📅 **Event Board** — updated {ts(now, 'F')}\n\n"
+    content = (f"📅 **Event Board** (server-wide) — updated {ts(now, 'F')}\n\n"
                f"{block('Today (UTC)', d0s, d0e)}\n\n"
-               f"{block('Tomorrow (UTC)', d1s, d1e)}")
+               f"{block('Tomorrow (UTC)', d1s, d1e)}\n\n"
+               f"*In an alliance? Tap **My Alliance Events** below for your own schedule.*")
 
     msg_id = cfg.get("board_message_id")
     try:
         if msg_id:
             try:
                 msg = await channel.fetch_message(msg_id)
-                await msg.edit(content=content)
+                await msg.edit(content=content, view=BoardView())
                 return
             except discord.NotFound:
                 pass
-        sent = await channel.send(content)
+        sent = await channel.send(content, view=BoardView())
         store.set_guild_config(guild.id, board_message_id=sent.id)
     except discord.DiscordException as ex:
         log.error("board refresh failed: %s", ex)
