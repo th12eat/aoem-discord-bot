@@ -211,6 +211,19 @@ async def event_add(interaction: discord.Interaction,
         "schedule": schedule,
         "created_by": str(interaction.user.id),
     }
+
+    # reject a true duplicate: same name + same scope that ever fires at the same
+    # time as an existing one. (Different events at the same time are fine.)
+    now = datetime.now(timezone.utc)
+    for existing in store.events_for_guild(interaction.guild_id):
+        if (existing["name"].strip().lower() == name.strip().lower()
+                and existing.get("scope", SERVER_SCOPE) == scope.value):
+            clash = sched.schedules_collide(existing, event, now)
+            if clash:
+                return await interaction.response.send_message(
+                    f"⚠️ **{name}** ({scope_label(scope.value)}) already occurs at that time "
+                    f"— next clash {ts(clash, 'F')}. Not added (duplicate).", ephemeral=True)
+
     store.add_event(event)
     await interaction.response.send_message(
         f"✅ Added **{name}** (`{event['id']}`) · [{scope_label(scope.value)}] — "
@@ -219,15 +232,37 @@ async def event_add(interaction: discord.Interaction,
 
 
 # ── /event_remove ────────────────────────────────────────────────────────────
+def _short_schedule(schedule: dict) -> str:
+    """Compact schedule for an autocomplete label (no dynamic timestamps there)."""
+    t = schedule["type"]
+    times = ",".join(schedule.get("times", []))
+    if t == "once":
+        return schedule.get("datetime", "?").replace("T", " ") + " UTC"
+    if t == "daily":
+        return f"daily {times} UTC"
+    if t == "everyother":
+        return f"every-other-day {times} UTC"
+    if t == "weekly":
+        names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        days = "/".join(names[d] for d in schedule.get("days", []))
+        return f"{days} {times} UTC"
+    return times
+
+
 async def _remove_autocomplete(interaction: discord.Interaction, current: str):
-    """Suggest events the user is allowed to remove, matching typed text."""
+    """Suggest events the user may remove, labeled with schedule + next occurrence
+    so same-named events are distinguishable."""
     cur = current.lower()
+    now = datetime.now(timezone.utc)
     out = []
     for e in store.events_for_guild(interaction.guild_id):
         scope = e.get("scope", SERVER_SCOPE)
         if not can_admin_scope(interaction.user, scope):
             continue
-        label = f"[{scope_label(scope)}] {e['name']}"
+        nxt = sched.next_occurrence(e, now)
+        nxt_txt = nxt.strftime("%b %d %H:%M") if nxt else "past"
+        # e.g. "[WC1] Trojan Turmoil · Mon/Wed/Fri 19:00 UTC · next Jul 20 19:00"
+        label = f"[{scope_label(scope)}] {e['name']} · {_short_schedule(e['schedule'])} · next {nxt_txt}"
         if cur in label.lower() or cur in e["id"]:
             out.append(app_commands.Choice(name=label[:100], value=e["id"]))
     return out[:25]  # Discord caps autocomplete at 25

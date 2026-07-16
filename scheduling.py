@@ -80,6 +80,22 @@ def next_occurrence(event: dict, now: datetime, horizon_days: int = 366) -> date
     return occ[0] if occ else None
 
 
+def schedules_collide(a: dict, b: dict, now: datetime, horizon_days: int = 60) -> datetime | None:
+    """Return the first UTC instant where events `a` and `b` BOTH fire within the
+    horizon, or None. Used to reject a duplicate (same name, same time). Compares
+    on the minute — two occurrences at the same HH:MM on the same date collide.
+    """
+    now = _utc(now)
+    end = now + timedelta(days=horizon_days)
+    occ_a = {dt.replace(second=0, microsecond=0) for dt in occurrences_between(a, now, end)}
+    if not occ_a:
+        return None
+    for dt in occurrences_between(b, now, end):
+        if dt.replace(second=0, microsecond=0) in occ_a:
+            return dt
+    return None
+
+
 def occurrences_for_events(events: list[dict], start: datetime, end: datetime) -> list[tuple[datetime, dict]]:
     """(fire_time, event) pairs across many events in a window, sorted by time."""
     pairs: list[tuple[datetime, dict]] = []
