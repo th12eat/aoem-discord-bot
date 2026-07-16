@@ -1,68 +1,363 @@
-"""AoEM event-management Discord bot — bare-bones MVP.
+"""Catherine — AoEM event-management Discord bot.
 
-Goal for this stage: connect to Discord, confirm the bot authenticates on our
-server, and prove it can respond to a command. Everything else comes later.
+Slash-command based (required for ephemeral replies + no channel spam).
+
+Events carry a SCOPE: "server" (pings @eRa8, any R4 may manage) or an alliance
+key WC1/AGC/REU/MyT (pings that alliance's member role, only that alliance's R4
+may manage). Manage-Server is always a safety hatch.
+
+Admin:
+  /config           set the @eRa8 server member role + board channel
+  /config_alliance  register an alliance's R4 role + member role
+  /event_add        add an event (scope, once/daily/weekly, UTC times)
+  /event_remove     remove an event by id
+Member (ephemeral replies, scoped to what the viewer may see):
+  /event_list /next /today /week
+
+Background:
+  - scheduler pings the scope's role at T-1h and at start
+  - #event-scheduler board auto-updates: today's + tomorrow's events, labeled by
+    scope, rolling over at UTC midnight (Catherine-only writes)
+
+All times stored + entered in UTC; shown via Discord dynamic timestamps.
 """
 
 import os
+import uuid
 import logging
+from datetime import datetime, timedelta, timezone
 
 import discord
-from discord.ext import commands
+from discord import app_commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-# ── config ───────────────────────────────────────────────────────────────────
-load_dotenv()  # pulls DISCORD_TOKEN from a local .env file (see .env.example)
+import store
+import scheduling as sched
+from alliances import ALLIANCES, SERVER_SCOPE, SCOPES, scope_label, scope_display
+from helpers import (ts, ts_both, describe_schedule, can_admin_scope, can_view_scope,
+                     ping_role_id, is_any_r4)
+
+load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s %(name)s: %(message)s",
-)
-log = logging.getLogger("aoem-bot")
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s  %(levelname)-8s %(name)s: %(message)s")
+log = logging.getLogger("catherine")
 
-# Intents: message_content is a "privileged" intent required to read the text of
-# messages (so the "!ping" prefix command works). Enable it in the Developer
-# Portal → Bot → Privileged Gateway Intents, or this login will fail.
 intents = discord.Intents.default()
 intents.message_content = True
-
+intents.members = True   # for member-role checks + future DM-by-role
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+_fired: set[str] = set()
 
-# ── lifecycle ────────────────────────────────────────────────────────────────
+# scope choices reused by /event_add and /config_alliance
+_SCOPE_CHOICES = [app_commands.Choice(name=scope_display(s), value=s) for s in SCOPES]
+_ALLIANCE_CHOICES = [app_commands.Choice(name=f"{v[0]} ({k})", value=k)
+                     for k, v in ALLIANCES.items()]
+
+
 @bot.event
 async def on_ready():
-    """Fires once the bot has authenticated and the gateway is ready."""
     log.info("Logged in as %s (id: %s)", bot.user, bot.user.id)
-    if bot.guilds:
-        log.info("Connected to %d guild(s):", len(bot.guilds))
-        for g in bot.guilds:
-            log.info("  • %s (id: %s, members: %s)", g.name, g.id, g.member_count)
-    else:
-        log.warning(
-            "Not in any guild yet. Invite the bot with an OAuth2 URL "
-            "(scopes: bot; permissions: Send Messages)."
-        )
-    log.info("Ready. Try '!ping' in a channel the bot can see.")
+    try:
+        synced = await bot.tree.sync()
+        log.info("Synced %d slash command(s).", len(synced))
+    except Exception as e:  # noqa: BLE001
+        log.error("Slash sync failed: %s", e)
+    if not scheduler_tick.is_running():
+        scheduler_tick.start()
+    if not board_refresh.is_running():
+        board_refresh.start()
+    log.info("Ready.")
 
 
-# ── commands ─────────────────────────────────────────────────────────────────
+# ── /config ──────────────────────────────────────────────────────────────────
+@bot.tree.command(name="config", description="Set the @eRa8 server member role and board channel.")
+@app_commands.describe(server_member_role="@eRa8 — pinged for server-wide events",
+                       board_channel="Channel for the daily board (e.g. #event-scheduler)")
+async def config_cmd(interaction: discord.Interaction,
+                     server_member_role: discord.Role | None = None,
+                     board_channel: discord.TextChannel | None = None):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message(
+            "You need **Manage Server** to change configuration.", ephemeral=True)
+    store.set_guild_config(
+        interaction.guild_id,
+        server_member_role_id=server_member_role.id if server_member_role else None,
+        board_channel_id=board_channel.id if board_channel else None,
+    )
+    cfg = store.guild_config(interaction.guild_id)
+    smr = cfg.get("server_member_role_id")
+    bc = cfg.get("board_channel_id")
+    await interaction.response.send_message(
+        "✅ Config updated.\n"
+        f"**@eRa8 role:** {('<@&'+str(smr)+'>') if smr else '—'}\n"
+        f"**Board channel:** {('<#'+str(bc)+'>') if bc else '—'}",
+        ephemeral=True)
+
+
+# ── /config_alliance ─────────────────────────────────────────────────────────
+@bot.tree.command(name="config_alliance", description="Register an alliance's R4 + member roles.")
+@app_commands.describe(alliance="Which alliance",
+                       r4_role="That alliance's R4 role (may manage its events)",
+                       member_role="That alliance's member role (pinged / may view)")
+@app_commands.choices(alliance=_ALLIANCE_CHOICES)
+async def config_alliance(interaction: discord.Interaction,
+                          alliance: app_commands.Choice[str],
+                          r4_role: discord.Role,
+                          member_role: discord.Role):
+    if not interaction.user.guild_permissions.manage_guild:
+        return await interaction.response.send_message(
+            "You need **Manage Server** to change configuration.", ephemeral=True)
+    store.set_alliance_roles(interaction.guild_id, alliance.value, r4_role.id, member_role.id)
+    name = ALLIANCES[alliance.value][0]
+    await interaction.response.send_message(
+        f"✅ **{name} ({alliance.value})** registered.\n"
+        f"R4: {r4_role.mention} · Members: {member_role.mention}", ephemeral=True)
+
+
+# ── /event_add ───────────────────────────────────────────────────────────────
+@bot.tree.command(name="event_add", description="Add an event (times in UTC).")
+@app_commands.describe(
+    name="Event name, e.g. Trojan Turmoil",
+    scope="Server-wide or a specific alliance",
+    recurrence="How it repeats",
+    times="UTC time(s), comma HH:MM — e.g. 03:00,13:00,21:00",
+    weekdays="Weekly only: Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+    date="One-time only: UTC date YYYY-MM-DD",
+)
+@app_commands.choices(
+    scope=_SCOPE_CHOICES,
+    recurrence=[app_commands.Choice(name="One-time", value="once"),
+                app_commands.Choice(name="Daily", value="daily"),
+                app_commands.Choice(name="Weekly", value="weekly")],
+)
+async def event_add(interaction: discord.Interaction,
+                    name: str,
+                    scope: app_commands.Choice[str],
+                    recurrence: app_commands.Choice[str],
+                    times: str,
+                    weekdays: str | None = None,
+                    date: str | None = None):
+    if not can_admin_scope(interaction.user, scope.value):
+        who = "any R4" if scope.value == SERVER_SCOPE else f"{scope.value} R4"
+        return await interaction.response.send_message(
+            f"Only {who} can add **{scope_label(scope.value)}** events.", ephemeral=True)
+
+    try:
+        time_list = [t.strip() for t in times.split(",") if t.strip()]
+        for t in time_list:
+            h, m = t.split(":")
+            if not (0 <= int(h) < 24 and 0 <= int(m) < 60):
+                raise ValueError
+        if not time_list:
+            raise ValueError
+    except ValueError:
+        return await interaction.response.send_message(
+            "⚠️ `times` must be one or more `HH:MM` (24h UTC), comma-separated.", ephemeral=True)
+
+    rtype = recurrence.value
+    schedule: dict = {"type": rtype}
+    if rtype == "once":
+        if not date:
+            return await interaction.response.send_message(
+                "⚠️ One-time events need a `date` (YYYY-MM-DD).", ephemeral=True)
+        try:
+            datetime.fromisoformat(f"{date}T{time_list[0]}")
+        except ValueError:
+            return await interaction.response.send_message(
+                "⚠️ Couldn't parse date/time. Use date `YYYY-MM-DD`.", ephemeral=True)
+        schedule["datetime"] = f"{date}T{time_list[0]}"
+    elif rtype == "daily":
+        schedule["times"] = time_list
+    elif rtype == "weekly":
+        names = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+        if not weekdays:
+            return await interaction.response.send_message(
+                "⚠️ Weekly events need `weekdays` (e.g. Mon,Wed,Fri).", ephemeral=True)
+        try:
+            days = [names[d.strip().lower()[:3]] for d in weekdays.split(",") if d.strip()]
+            if not days:
+                raise KeyError
+        except KeyError:
+            return await interaction.response.send_message(
+                "⚠️ `weekdays` must be day names like Mon,Wed,Fri.", ephemeral=True)
+        schedule["days"] = sorted(set(days))
+        schedule["times"] = time_list
+
+    event = {
+        "id": uuid.uuid4().hex[:8],
+        "guild_id": str(interaction.guild_id),
+        "name": name,
+        "scope": scope.value,
+        "schedule": schedule,
+        "created_by": str(interaction.user.id),
+    }
+    store.add_event(event)
+    await interaction.response.send_message(
+        f"✅ Added **{name}** (`{event['id']}`) · [{scope_label(scope.value)}] — "
+        f"{describe_schedule(schedule)}", ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
+# ── /event_remove ────────────────────────────────────────────────────────────
+@bot.tree.command(name="event_remove", description="Remove an event by its id.")
+@app_commands.describe(event_id="The 8-char id shown in /event_list")
+async def event_remove(interaction: discord.Interaction, event_id: str):
+    event_id = event_id.strip()
+    ev = next((e for e in store.events_for_guild(interaction.guild_id) if e["id"] == event_id), None)
+    if ev is None:
+        return await interaction.response.send_message(f"⚠️ No event `{event_id}` found.", ephemeral=True)
+    if not can_admin_scope(interaction.user, ev.get("scope", SERVER_SCOPE)):
+        return await interaction.response.send_message(
+            f"You can't remove a **{scope_label(ev.get('scope', SERVER_SCOPE))}** event.", ephemeral=True)
+    store.remove_event(event_id, interaction.guild_id)
+    await interaction.response.send_message(f"🗑️ Removed **{ev['name']}** (`{event_id}`).", ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
+# ── visibility filter for a viewer ───────────────────────────────────────────
+def _visible_events(member: discord.Member) -> list[dict]:
+    return [e for e in store.events_for_guild(member.guild.id)
+            if can_view_scope(member, e.get("scope", SERVER_SCOPE))]
+
+
+# ── member queries (ephemeral) ───────────────────────────────────────────────
+@bot.tree.command(name="event_list", description="List events you can see.")
+async def event_list(interaction: discord.Interaction):
+    evs = _visible_events(interaction.user)
+    if not evs:
+        return await interaction.response.send_message("No events you can see yet.", ephemeral=True)
+    lines = [f"• [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}** (`{e['id']}`) — "
+             f"{describe_schedule(e['schedule'])}" for e in evs]
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="next", description="Your next upcoming event.")
+async def next_cmd(interaction: discord.Interaction):
+    now = datetime.now(timezone.utc)
+    upcoming = []
+    for e in _visible_events(interaction.user):
+        nxt = sched.next_occurrence(e, now)
+        if nxt:
+            upcoming.append((nxt, e))
+    if not upcoming:
+        return await interaction.response.send_message("No upcoming events.", ephemeral=True)
+    upcoming.sort(key=lambda p: p[0])
+    dt, e = upcoming[0]
+    await interaction.response.send_message(
+        f"⏭️ Next: [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}** — {ts_both(dt)}",
+        ephemeral=True)
+
+
+@bot.tree.command(name="today", description="Today's events you can see (UTC).")
+async def today_cmd(interaction: discord.Interaction):
+    await _list_window(interaction, *sched.utc_day_bounds(datetime.now(timezone.utc)), "Today")
+
+
+@bot.tree.command(name="week", description="This week's events you can see (UTC).")
+async def week_cmd(interaction: discord.Interaction):
+    await _list_window(interaction, *sched.utc_week_bounds(datetime.now(timezone.utc)), "This week")
+
+
+async def _list_window(interaction, start, end, label):
+    evs = _visible_events(interaction.user)
+    pairs = sched.occurrences_for_events(evs, start, end)
+    if not pairs:
+        return await interaction.response.send_message(f"No events {label.lower()}.", ephemeral=True)
+    lines = [f"• {ts(dt, 't')} — [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}**"
+             for dt, e in pairs]
+    await interaction.response.send_message(f"**{label} (UTC day)**\n" + "\n".join(lines), ephemeral=True)
+
+
+# ── scheduler: ping the scope's role at T-1h and at start ────────────────────
+@tasks.loop(minutes=1)
+async def scheduler_tick():
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    for guild in bot.guilds:
+        cfg = store.guild_config(guild.id)
+        chan_id = cfg.get("board_channel_id")
+        channel = guild.get_channel(chan_id) if chan_id else None
+        if channel is None:
+            continue
+        for e in store.events_for_guild(guild.id):
+            scope = e.get("scope", SERVER_SCOPE)
+            role_id = ping_role_id(guild.id, scope)
+            if not role_id:
+                continue
+            for offset, when in ((60, "in 1 hour"), (0, "starting now")):
+                target = now + timedelta(minutes=offset)
+                for dt in sched.occurrences_between(e, target, target):
+                    key = f"{e['id']}|{dt.isoformat()}|{offset}"
+                    if key in _fired:
+                        continue
+                    _fired.add(key)
+                    try:
+                        await channel.send(
+                            f"<@&{role_id}> **{e['name']}** ({scope_label(scope)}) {when} — {ts_both(dt)}")
+                    except discord.DiscordException as ex:
+                        log.error("ping send failed: %s", ex)
+    if len(_fired) > 5000:
+        _fired.clear()
+
+
+# ── board channel: today's + tomorrow's, labeled by scope ────────────────────
+async def refresh_board(guild: discord.Guild):
+    cfg = store.guild_config(guild.id)
+    chan_id = cfg.get("board_channel_id")
+    channel = guild.get_channel(chan_id) if chan_id else None
+    if channel is None:
+        return
+    now = datetime.now(timezone.utc)
+    d0s, d0e = sched.utc_day_bounds(now)
+    d1s, d1e = sched.utc_day_bounds(now + timedelta(days=1))
+    evs = store.events_for_guild(guild.id)
+
+    def block(title, start, end):
+        pairs = sched.occurrences_for_events(evs, start, end)
+        if not pairs:
+            return f"__{title}__\n*(none)*"
+        rows = "\n".join(
+            f"• {ts(dt, 't')} — [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}** ({ts(dt,'R')})"
+            for dt, e in pairs)
+        return f"__{title}__\n{rows}"
+
+    content = (f"📅 **Event Board** — updated {ts(now, 'F')}\n\n"
+               f"{block('Today (UTC)', d0s, d0e)}\n\n"
+               f"{block('Tomorrow (UTC)', d1s, d1e)}")
+
+    msg_id = cfg.get("board_message_id")
+    try:
+        if msg_id:
+            try:
+                msg = await channel.fetch_message(msg_id)
+                await msg.edit(content=content)
+                return
+            except discord.NotFound:
+                pass
+        sent = await channel.send(content)
+        store.set_guild_config(guild.id, board_message_id=sent.id)
+    except discord.DiscordException as ex:
+        log.error("board refresh failed: %s", ex)
+
+
+@tasks.loop(minutes=10)
+async def board_refresh():
+    for guild in bot.guilds:
+        await refresh_board(guild)
+
+
 @bot.command(name="ping")
 async def ping(ctx: commands.Context):
-    """Simple round-trip check — proves the bot can read and reply."""
-    latency_ms = round(bot.latency * 1000)
-    await ctx.send(f"🏓 Pong! Gateway latency: {latency_ms} ms")
+    await ctx.send(f"🏓 Pong! {round(bot.latency * 1000)} ms")
 
 
-# ── entrypoint ───────────────────────────────────────────────────────────────
 def main():
     if not TOKEN:
-        raise SystemExit(
-            "DISCORD_TOKEN is not set. Copy .env.example to .env and paste your "
-            "bot token, then run again."
-        )
-    bot.run(TOKEN, log_handler=None)  # we configured logging ourselves above
+        raise SystemExit("DISCORD_TOKEN is not set. Copy .env.example to .env and add it.")
+    bot.run(TOKEN, log_handler=None)
 
 
 if __name__ == "__main__":

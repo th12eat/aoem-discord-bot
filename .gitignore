@@ -1,10 +1,17 @@
-# secrets — never commit the real token
+# secrets — never commit the real token or editor swap files that may hold it
 .env
+.env.*
+*.swp
+*.swo
+*~
 
 # python
 .venv/
 __pycache__/
 *.pyc
+
+# runtime data (per-guild role IDs + events) — machine-specific, not source
+data/
 
 # OS / editor
 .DS_Store

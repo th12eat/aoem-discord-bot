@@ -1,54 +1,76 @@
-# AoEM Event Bot — MVP
+# Catherine — AoEM Event Bot
 
-Bare-bones Discord bot to verify it can **authenticate on our server** and
-respond to a command. Feature build-out comes later.
+Discord bot to schedule and announce Age of Empires Mobile events for Era 8,
+with **server-wide** and **per-alliance** scopes.
 
-## What it does (for now)
-- Logs in with a bot token and prints the logged-in identity + every guild
-  (server) it's in — your proof that auth worked.
-- Responds to `!ping` with the gateway latency.
+## Concepts
 
-## One-time setup
+**Scope.** Every event is either:
+- **Server** — pings `@eRa8`; any alliance R4 may create/edit it.
+- **Alliance** (WC1 / AGC / REU / MyT) — pings that alliance's member role;
+  only that alliance's R4 may create/edit it.
 
-### 1. Create the bot application
-1. Go to <https://discord.com/developers/applications> → **New Application**.
-2. Left sidebar → **Bot** → **Reset Token** → copy the token.
-3. On that same Bot page, under **Privileged Gateway Intents**, enable
-   **Message Content Intent** (needed for the `!ping` prefix command).
+Manage-Server always works as a safety hatch.
 
-### 2. Invite the bot to our server
-1. Left sidebar → **OAuth2** → **URL Generator**.
-2. Scopes: check **`bot`**.
-3. Bot Permissions: check **Send Messages** (and **Read Message History**).
-4. Copy the generated URL, open it, pick our server, **Authorize**.
-   *(You need "Manage Server" permission on the server to add a bot.)*
+**Times are UTC.** Admins enter times in UTC; everyone *sees* them in their own
+local timezone via Discord's dynamic timestamps.
 
-### 3. Local setup
-```bash
-cd aoem-discord-bot
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env               # then edit .env and paste your token
-```
+## Commands
+
+Admin (Manage Server):
+| Command | Purpose |
+|---|---|
+| `/config` | set the `@eRa8` server member role + board channel (`#event-scheduler`) |
+| `/config_alliance` | register an alliance's R4 role + member role |
+
+Admin (R4 for the scope, or Manage Server):
+| Command | Purpose |
+|---|---|
+| `/event_add` | add an event: scope, recurrence (once/daily/weekly), UTC times |
+| `/event_remove` | remove an event by id |
+
+Member (replies are **ephemeral** — only you see them; scoped to what you can view):
+| Command | Purpose |
+|---|---|
+| `/event_list` | events you can see |
+| `/next` | your next upcoming event |
+| `/today` | today's events (UTC day) |
+| `/week` | this week's events (UTC week) |
+
+## Background behavior
+- **Pings** the scope's role at **T-1h** and **at start** in the board channel.
+- **Board** (`#event-scheduler`): a single Catherine-owned message showing
+  **today's + tomorrow's** events (labeled by scope), auto-refreshing every 10
+  min and rolling over at UTC midnight.
+
+## First-run setup (in Discord, as a Manage-Server user)
+1. `/config server_member_role:@eRa8 board_channel:#event-scheduler`
+2. For each alliance, e.g.
+   `/config_alliance alliance:WorldClass (WC1) r4_role:@WorldClass R4 - eRa8 member_role:@WorldClass eRa8`
+   (repeat for AGC, REU, MyT)
+3. Add events, e.g. Trojan Turmoil for WC1, Mon/Wed/Fri 19:00 UTC:
+   `/event_add name:Trojan Turmoil scope:WorldClass (WC1) recurrence:Weekly times:19:00 weekdays:Mon,Wed,Fri`
 
 ## Run
 ```bash
-source .venv/bin/activate
+cd aoem-discord-bot
+python3 -m venv .venv && source .venv/bin/activate    # WSL/Linux; keep under ~ not /mnt/c
+pip install -r requirements.txt
+cp .env.example .env      # paste Catherine's token
 python bot.py
 ```
-Success looks like:
-```
-Logged in as YourBot#1234 (id: ...)
-Connected to 1 guild(s):
-  • Our Server (id: ..., members: ...)
-Ready. Try '!ping' in a channel the bot can see.
-```
-Then type `!ping` in any channel the bot can see — it should reply `🏓 Pong!`.
 
-## Notes
-- The token is a password. It lives only in `.env`, which is gitignored. If it
-  ever leaks, Reset Token in the portal immediately.
-- Runs on any machine with Python 3.10+ and network access — your home PC, or
-  your work machine for this test. No hosting/deploy needed; it's a long-running
-  local process (Ctrl+C to stop).
+## Portal settings required
+- **Bot → Privileged Gateway Intents:** enable **Message Content** AND
+  **Server Members Intent** (the latter is needed to read who has which role).
+- **Invite scopes:** `bot` + `applications.commands`; permissions: Send Messages,
+  Read Message History, Mention Everyone (for role pings).
+
+## Data
+`data/config.json` (roles/channel per guild) and `data/events.json` (events) —
+JSON, human-readable, survive restarts. The `data/` dir is gitignored (it's
+machine/guild-specific runtime state, and role IDs needn't live in source).
+
+## Not yet built (planned)
+- DM a role's members for specific events
+- Richer per-event content + multi-language translation with per-user locale
