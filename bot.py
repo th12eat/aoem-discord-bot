@@ -126,12 +126,13 @@ async def config_alliance(interaction: discord.Interaction,
     recurrence="How it repeats",
     times="UTC time(s), comma HH:MM — e.g. 03:00,13:00,21:00",
     weekdays="Weekly only: Mon,Tue,Wed,Thu,Fri,Sat,Sun",
-    date="One-time only: UTC date YYYY-MM-DD",
+    date="One-time date, or every-other-day start date: UTC YYYY-MM-DD",
 )
 @app_commands.choices(
     scope=_SCOPE_CHOICES,
     recurrence=[app_commands.Choice(name="One-time", value="once"),
                 app_commands.Choice(name="Daily", value="daily"),
+                app_commands.Choice(name="Every other day", value="everyother"),
                 app_commands.Choice(name="Weekly", value="weekly")],
 )
 async def event_add(interaction: discord.Interaction,
@@ -172,6 +173,17 @@ async def event_add(interaction: discord.Interaction,
         schedule["datetime"] = f"{date}T{time_list[0]}"
     elif rtype == "daily":
         schedule["times"] = time_list
+    elif rtype == "everyother":
+        if not date:
+            return await interaction.response.send_message(
+                "⚠️ Every-other-day events need a start `date` (YYYY-MM-DD).", ephemeral=True)
+        try:
+            datetime.fromisoformat(f"{date}T00:00")
+        except ValueError:
+            return await interaction.response.send_message(
+                "⚠️ Couldn't parse the start date. Use `YYYY-MM-DD`.", ephemeral=True)
+        schedule["anchor"] = date
+        schedule["times"] = time_list
     elif rtype == "weekly":
         names = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
         if not weekdays:
@@ -203,13 +215,28 @@ async def event_add(interaction: discord.Interaction,
 
 
 # ── /event_remove ────────────────────────────────────────────────────────────
-@bot.tree.command(name="event_remove", description="Remove an event by its id.")
-@app_commands.describe(event_id="The 8-char id shown in /event_list")
-async def event_remove(interaction: discord.Interaction, event_id: str):
-    event_id = event_id.strip()
+async def _remove_autocomplete(interaction: discord.Interaction, current: str):
+    """Suggest events the user is allowed to remove, matching typed text."""
+    cur = current.lower()
+    out = []
+    for e in store.events_for_guild(interaction.guild_id):
+        scope = e.get("scope", SERVER_SCOPE)
+        if not can_admin_scope(interaction.user, scope):
+            continue
+        label = f"[{scope_label(scope)}] {e['name']}"
+        if cur in label.lower() or cur in e["id"]:
+            out.append(app_commands.Choice(name=label[:100], value=e["id"]))
+    return out[:25]  # Discord caps autocomplete at 25
+
+
+@bot.tree.command(name="event_remove", description="Delete an event (pick from the list).")
+@app_commands.describe(event="Start typing to pick the event to delete")
+@app_commands.autocomplete(event=_remove_autocomplete)
+async def event_remove(interaction: discord.Interaction, event: str):
+    event_id = event.strip()
     ev = next((e for e in store.events_for_guild(interaction.guild_id) if e["id"] == event_id), None)
     if ev is None:
-        return await interaction.response.send_message(f"⚠️ No event `{event_id}` found.", ephemeral=True)
+        return await interaction.response.send_message(f"⚠️ No matching event found.", ephemeral=True)
     if not can_admin_scope(interaction.user, ev.get("scope", SERVER_SCOPE)):
         return await interaction.response.send_message(
             f"You can't remove a **{scope_label(ev.get('scope', SERVER_SCOPE))}** event.", ephemeral=True)

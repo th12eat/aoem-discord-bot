@@ -90,6 +90,8 @@ def describe_schedule(schedule: dict) -> str:
     times = ", ".join(schedule.get("times", []))
     if t == "daily":
         return f"daily · {times} UTC"
+    if t == "everyother":
+        return f"every other day (from {schedule.get('anchor', '?')}) · {times} UTC"
     if t == "weekly":
         names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         days = "/".join(names[d] for d in schedule.get("days", []))

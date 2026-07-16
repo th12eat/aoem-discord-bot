@@ -43,15 +43,26 @@ def occurrences_between(event: dict, start: datetime, end: datetime) -> list[dat
             out.append(dt)
         return out
 
-    # daily / weekly both iterate day-by-day across the window
+    # daily / weekly / everyother all iterate day-by-day across the window
     times = [_parse_hhmm(t) for t in sched.get("times", [])]
     days = sched.get("days")  # None for daily; list of weekdays for weekly
+
+    # every-other-day: fires only on days an even number of days after `anchor`
+    anchor_date = None
+    if stype == "everyother":
+        anchor_date = datetime.fromisoformat(sched["anchor"]).date()
 
     day = start.date()
     last = end.date()
     while day <= last:
-        weekday = datetime(day.year, day.month, day.day).weekday()
-        if days is None or weekday in days:
+        fires = True
+        if stype == "weekly":
+            fires = datetime(day.year, day.month, day.day).weekday() in days
+        elif stype == "everyother":
+            delta = (day - anchor_date).days
+            fires = delta >= 0 and delta % 2 == 0
+        # stype == "daily" → fires every day
+        if fires:
             for h, m in times:
                 dt = datetime(day.year, day.month, day.day, h, m, tzinfo=timezone.utc)
                 if start <= dt <= end:
