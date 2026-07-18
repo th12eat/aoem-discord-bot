@@ -7,17 +7,25 @@ key WC1/AGC/REU/MyT (pings that alliance's member role, only that alliance's R4
 may manage). Manage-Server is always a safety hatch.
 
 Admin:
-  /config           set the @eRa8 server member role + board channel
-  /config_alliance  register an alliance's R4 role + member role
-  /event_add        add an event (scope, once/daily/weekly, UTC times)
-  /event_remove     remove an event by id
-Member (ephemeral replies, scoped to what the viewer may see):
+  /config             server @eRa8 role + board channel
+  /config_alliance    register an alliance's R4 role + member role
+  /event_add          generic event (scope, once/daily/weekly/every-other, UTC)
+  /server_event_add   server "opening soon" event (date range, pings everyone)
+  /alliance_event_add alliance leadership event (specific date/time)
+  /legion_add         WC/BoD legion event (every-other-week, Sat/Sun, fixed times)
+  /kvk_add            multi-day KvK; stages auto-mapped from a start date
+  /event_edit         edit name / time / duration / scope
+  /event_remove       delete an event
+Member (ephemeral, scoped to what the viewer may see):
   /event_list /next /today /week
 
 Background:
-  - scheduler pings the scope's role at T-1h and at start
-  - #event-scheduler board auto-updates: today's + tomorrow's events, labeled by
-    scope, rolling over at UTC midnight (Catherine-only writes)
+  - scheduler alerts the scope's role at T-1h and at start; the 1h alert is
+    deleted when the start alert fires, and the start alert self-deletes after
+    the event's duration (default 60 min). KvK stages alert at each stage start
+    (no T-1h, no auto-delete) and carry the stage's end + actionable info.
+  - #event-scheduler board auto-updates: today's + tomorrow's events, rolling
+    over at UTC midnight (Catherine-only writes)
 
 All times stored + entered in UTC; shown via Discord dynamic timestamps.
 """
@@ -34,6 +42,8 @@ from dotenv import load_dotenv
 
 import store
 import scheduling as sched
+import kvk
+import catalog
 from alliances import ALLIANCES, SERVER_SCOPE, SCOPES, scope_label, scope_display
 from helpers import (ts, ts_both, describe_schedule, can_admin_scope, can_view_scope,
                      ping_role_id, is_any_r4)
@@ -51,6 +61,20 @@ intents.members = True   # for member-role checks + future DM-by-role
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 _fired: set[str] = set()
+# live alert bookkeeping (in-memory; transient alerts, fine to reset on restart).
+#   _alert_1h[occ_key]  = message id of the "in 1 hour" alert (deleted when NOW fires)
+#   _alert_now[occ_key] = (channel_id, message_id, expire_dt) for the "starting now"
+#                         alert (deleted once the event's duration elapses)
+_alert_1h: dict[str, int] = {}
+_alert_now: dict[str, tuple[int, int, datetime]] = {}
+
+
+def _event_duration_min(e: dict) -> int:
+    """Event duration in minutes; default 60. KvK stages use their own spans."""
+    try:
+        return int(e.get("duration", 60))
+    except (TypeError, ValueError):
+        return 60
 
 # scope choices reused by /event_add and /config_alliance
 _SCOPE_CHOICES = [app_commands.Choice(name=scope_display(s), value=s) for s in SCOPES]
@@ -231,6 +255,142 @@ async def event_add(interaction: discord.Interaction,
     await refresh_board(interaction.guild)
 
 
+# ── shared add helper ────────────────────────────────────────────────────────
+async def _finalize_add(interaction, event, human):
+    """Duplicate-check (same name+scope colliding in time), save, confirm, refresh."""
+    now = datetime.now(timezone.utc)
+    for existing in store.events_for_guild(interaction.guild_id):
+        if (existing["name"].strip().lower() == event["name"].strip().lower()
+                and existing.get("scope", SERVER_SCOPE) == event["scope"]
+                and existing.get("schedule", {}).get("type") not in ("kvk",)
+                and event["schedule"].get("type") not in ("kvk",)):
+            clash = sched.schedules_collide(existing, event, now)
+            if clash:
+                return await interaction.response.send_message(
+                    f"⚠️ **{event['name']}** ({scope_label(event['scope'])}) already occurs then "
+                    f"— next clash {ts(clash,'F')}. Not added (duplicate).", ephemeral=True)
+    store.add_event(event)
+    await interaction.response.send_message(
+        f"✅ Added **{event['name']}** (`{event['id']}`) · [{scope_label(event['scope'])}] — {human}",
+        ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
+def _mk_event(interaction, name, scope, schedule, **extra):
+    return {"id": uuid.uuid4().hex[:8], "guild_id": str(interaction.guild_id),
+            "name": name, "scope": scope, "schedule": schedule,
+            "created_by": str(interaction.user.id), **extra}
+
+
+# ── /server_event_add — "opening soon", date RANGE, pings everyone ───────────
+_SERVER_EVENT_CHOICES = [app_commands.Choice(name=n, value=n) for n in catalog.SERVER_EVENTS] + \
+                        [app_commands.Choice(name=catalog.CUSTOM, value=catalog.CUSTOM)]
+
+@bot.tree.command(name="server_event_add", description="Announce a server-wide event opening (date range).")
+@app_commands.describe(event="Event (or Custom…)", start_date="Opens UTC YYYY-MM-DD",
+                       end_date="Closes UTC YYYY-MM-DD", custom_name="If Custom: the event name")
+@app_commands.choices(event=_SERVER_EVENT_CHOICES)
+async def server_event_add(interaction: discord.Interaction, event: app_commands.Choice[str],
+                           start_date: str, end_date: str, custom_name: str | None = None):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can add server events.", ephemeral=True)
+    name = custom_name if event.value == catalog.CUSTOM else event.value
+    if not name:
+        return await interaction.response.send_message("⚠️ Provide a `custom_name` for a Custom event.", ephemeral=True)
+    try:
+        s = datetime.fromisoformat(f"{start_date}T00:00"); datetime.fromisoformat(f"{end_date}T00:00")
+    except ValueError:
+        return await interaction.response.send_message("⚠️ Dates must be `YYYY-MM-DD`.", ephemeral=True)
+    # alerts fire at the window open; range shown in the message/board
+    schedule = {"type": "once", "datetime": f"{start_date}T00:00", "rangeEnd": end_date, "opening": True}
+    ev = _mk_event(interaction, name, SERVER_SCOPE, schedule)
+    await _finalize_add(interaction, ev, f"opens {start_date} → {end_date} UTC")
+
+
+# ── /alliance_event_add — leadership actionable, specific date/time ──────────
+_ALLI_EVENT_CHOICES = [app_commands.Choice(name=n, value=n) for n in catalog.ALLIANCE_EVENTS] + \
+                      [app_commands.Choice(name=catalog.CUSTOM, value=catalog.CUSTOM)]
+
+@bot.tree.command(name="alliance_event_add", description="Add an alliance leadership event (specific time).")
+@app_commands.describe(alliance="Which alliance", event="Event (or Custom…)",
+                       date="UTC YYYY-MM-DD", time="UTC HH:MM", duration="Minutes (default 60)",
+                       custom_name="If Custom: the event name")
+@app_commands.choices(alliance=_ALLIANCE_CHOICES, event=_ALLI_EVENT_CHOICES)
+async def alliance_event_add(interaction: discord.Interaction, alliance: app_commands.Choice[str],
+                             event: app_commands.Choice[str], date: str, time: str,
+                             duration: int | None = None, custom_name: str | None = None):
+    if not can_admin_scope(interaction.user, alliance.value):
+        return await interaction.response.send_message(
+            f"Only {alliance.value} R4 can add {alliance.value} events.", ephemeral=True)
+    name = custom_name if event.value == catalog.CUSTOM else event.value
+    if not name:
+        return await interaction.response.send_message("⚠️ Provide a `custom_name` for a Custom event.", ephemeral=True)
+    try:
+        datetime.fromisoformat(f"{date}T{time}")
+    except ValueError:
+        return await interaction.response.send_message("⚠️ Use date `YYYY-MM-DD` and time `HH:MM`.", ephemeral=True)
+    schedule = {"type": "once", "datetime": f"{date}T{time}"}
+    ev = _mk_event(interaction, name, alliance.value, schedule, duration=duration or 60)
+    await _finalize_add(interaction, ev, f"{describe_schedule(schedule)} · {duration or 60}min")
+
+
+# ── /legion_add — WC/BoD, every other week, Sat/Sun, fixed times ─────────────
+_LEGION_CHOICES = [app_commands.Choice(name=f"{v} ({k})", value=k) for k, v in catalog.LEGION_EVENTS.items()]
+_LEGION_DAY_CHOICES = [app_commands.Choice(name="Saturday", value="5"), app_commands.Choice(name="Sunday", value="6")]
+_LEGION_TIME_CHOICES = [app_commands.Choice(name=f"{t} UTC", value=t) for t in catalog.LEGION_TIMES]
+
+@bot.tree.command(name="legion_add", description="Add a legion event (WC/BoD, every other week).")
+@app_commands.describe(alliance="Which alliance", event="Wonder Contest or Battle of Dawn",
+                       day="Saturday or Sunday", time="UTC time",
+                       anchor_date="First occurrence date (UTC YYYY-MM-DD, that Sat/Sun)")
+@app_commands.choices(alliance=_ALLIANCE_CHOICES, event=_LEGION_CHOICES,
+                      day=_LEGION_DAY_CHOICES, time=_LEGION_TIME_CHOICES)
+async def legion_add(interaction: discord.Interaction, alliance: app_commands.Choice[str],
+                     event: app_commands.Choice[str], day: app_commands.Choice[str],
+                     time: app_commands.Choice[str], anchor_date: str):
+    if not can_admin_scope(interaction.user, alliance.value):
+        return await interaction.response.send_message(
+            f"Only {alliance.value} R4 can add {alliance.value} legion events.", ephemeral=True)
+    wd = int(day.value)
+    try:
+        adt = datetime.fromisoformat(f"{anchor_date}T00:00")
+    except ValueError:
+        return await interaction.response.send_message("⚠️ `anchor_date` must be `YYYY-MM-DD`.", ephemeral=True)
+    if adt.weekday() != wd:
+        return await interaction.response.send_message(
+            f"⚠️ {anchor_date} isn't a {day.name}. Pick the date of the first {day.name}.", ephemeral=True)
+    name = catalog.LEGION_EVENTS[event.value]
+    schedule = {"type": "everyotherweek", "anchor": anchor_date, "days": [wd], "times": [time.value]}
+    ev = _mk_event(interaction, name, alliance.value, schedule, duration=60, legion=True)
+    await _finalize_add(interaction, ev, f"{describe_schedule(schedule)} · pings {alliance.value} (Legion role TBD)")
+
+
+# ── /kvk_add — multi-day, stages auto-derived from a start date ──────────────
+_KVK_CHOICES = [app_commands.Choice(name=lbl, value=k) for k, lbl in kvk.KVK_CHOICES]
+
+@bot.tree.command(name="kvk_add", description="Add a multi-day KvK; stages auto-mapped from the start date.")
+@app_commands.describe(event="Which KvK", start_date="UTC start date YYYY-MM-DD")
+@app_commands.choices(event=_KVK_CHOICES)
+async def kvk_add(interaction: discord.Interaction, event: app_commands.Choice[str], start_date: str):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can add KvK events.", ephemeral=True)
+    try:
+        datetime.fromisoformat(f"{start_date}T00:00")
+    except ValueError:
+        return await interaction.response.send_message("⚠️ `start_date` must be `YYYY-MM-DD`.", ephemeral=True)
+    short = event.value
+    name = kvk.KVK_DEFS[short]["name"]
+    schedule = {"type": "kvk", "short": short, "start": f"{start_date}T00:00"}
+    ev = _mk_event(interaction, name, SERVER_SCOPE, schedule)
+    stages = kvk.compute_stages(short, datetime.fromisoformat(f"{start_date}T00:00").replace(tzinfo=timezone.utc))
+    preview = "\n".join(f"• {s['title']} — {ts(s['start'],'D')}" for s in stages)
+    # KvK bypasses duplicate-time check (stage-based); add directly.
+    store.add_event(ev)
+    await interaction.response.send_message(
+        f"✅ Added **{name}** (`{ev['id']}`) — {len(stages)} stages:\n{preview}", ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
 # ── /event_remove ────────────────────────────────────────────────────────────
 def _short_schedule(schedule: dict) -> str:
     """Compact schedule for an autocomplete label (no dynamic timestamps there)."""
@@ -242,10 +402,15 @@ def _short_schedule(schedule: dict) -> str:
         return f"daily {times} UTC"
     if t == "everyother":
         return f"every-other-day {times} UTC"
+    names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     if t == "weekly":
-        names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         days = "/".join(names[d] for d in schedule.get("days", []))
         return f"{days} {times} UTC"
+    if t == "everyotherweek":
+        days = "/".join(names[d] for d in schedule.get("days", []))
+        return f"EOW {days} {times} UTC"
+    if t == "kvk":
+        return f"KvK from {schedule.get('start','?')[:10]}"
     return times
 
 
@@ -281,6 +446,71 @@ async def event_remove(interaction: discord.Interaction, event: str):
             f"You can't remove a **{scope_label(ev.get('scope', SERVER_SCOPE))}** event.", ephemeral=True)
     store.remove_event(event_id, interaction.guild_id)
     await interaction.response.send_message(f"🗑️ Removed **{ev['name']}** (`{event_id}`).", ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
+# ── /event_edit ──────────────────────────────────────────────────────────────
+@bot.tree.command(name="event_edit", description="Edit an event: name, time, duration, or scope.")
+@app_commands.describe(event="Pick the event to edit",
+                       name="New name (optional)",
+                       time="New UTC time HH:MM — for recurring events (optional)",
+                       datetime_="New UTC date+time YYYY-MM-DDTHH:MM — for one-time/KvK start (optional)",
+                       duration="New duration in minutes (optional)",
+                       scope="New scope (optional)")
+@app_commands.autocomplete(event=_remove_autocomplete)  # same picker: events you may admin
+@app_commands.choices(scope=_SCOPE_CHOICES)
+async def event_edit(interaction: discord.Interaction, event: str,
+                     name: str | None = None, time: str | None = None,
+                     datetime_: str | None = None, duration: int | None = None,
+                     scope: app_commands.Choice[str] | None = None):
+    ev = next((e for e in store.events_for_guild(interaction.guild_id) if e["id"] == event.strip()), None)
+    if ev is None:
+        return await interaction.response.send_message("⚠️ No matching event found.", ephemeral=True)
+    if not can_admin_scope(interaction.user, ev.get("scope", SERVER_SCOPE)):
+        return await interaction.response.send_message("You can't edit that event.", ephemeral=True)
+    # changing scope requires admin over the NEW scope too
+    if scope and not can_admin_scope(interaction.user, scope.value):
+        return await interaction.response.send_message(
+            f"You can't move it to **{scope_label(scope.value)}** (not your scope).", ephemeral=True)
+
+    changes: dict = {}
+    stype = ev.get("schedule", {}).get("type")
+    if name:
+        changes["name"] = name
+    if duration is not None:
+        changes["duration"] = max(1, duration)
+    if scope:
+        changes["scope"] = scope.value
+    if time:
+        try:
+            h, m = time.split(":");  assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+        except (ValueError, AssertionError):
+            return await interaction.response.send_message("⚠️ `time` must be `HH:MM` (24h UTC).", ephemeral=True)
+        if stype in ("daily", "weekly", "everyother", "everyotherweek"):
+            changes["schedule"] = {"times": [time]}
+        else:
+            return await interaction.response.send_message(
+                "⚠️ This event isn't recurring — use `datetime_` to move it.", ephemeral=True)
+    if datetime_:
+        try:
+            datetime.fromisoformat(datetime_)
+        except ValueError:
+            return await interaction.response.send_message("⚠️ `datetime_` must be `YYYY-MM-DDTHH:MM`.", ephemeral=True)
+        if stype == "once":
+            changes.setdefault("schedule", {})["datetime"] = datetime_
+        elif stype == "kvk":
+            changes.setdefault("schedule", {})["start"] = datetime_
+        else:
+            return await interaction.response.send_message(
+                "⚠️ This event is recurring — use `time` to change its time.", ephemeral=True)
+    if not changes:
+        return await interaction.response.send_message("Nothing to change — pass at least one field.", ephemeral=True)
+
+    updated = store.update_event(event.strip(), interaction.guild_id, changes)
+    await interaction.response.send_message(
+        f"✏️ Updated **{updated['name']}** (`{updated['id']}`) — {describe_schedule(updated['schedule'])}"
+        + (f" · {updated.get('duration')}min" if updated.get('duration') else ""),
+        ephemeral=True)
     await refresh_board(interaction.guild)
 
 
@@ -338,10 +568,27 @@ async def _list_window(interaction, start, end, label):
     await interaction.response.send_message(f"**{label} (UTC day)**\n" + "\n".join(lines), ephemeral=True)
 
 
-# ── scheduler: ping the scope's role at T-1h and at start ────────────────────
+# ── scheduler: alert at T-1h and at start, with a self-cleaning lifecycle ────
+#   • the "in 1 hour" alert is DELETED the moment the "starting now" alert posts
+#   • the "starting now" alert is DELETED once the event's duration elapses
+#   • KvK stage alerts get no T-1h pre-alert (multi-day → too noisy) and don't
+#     auto-delete (a stage lasts days); they carry the stage's end info instead
 @tasks.loop(minutes=1)
 async def scheduler_tick():
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+
+    # 1) expire any "starting now" alerts whose duration has elapsed
+    for okey, (cid, mid, expire) in list(_alert_now.items()):
+        if now >= expire:
+            ch = bot.get_channel(cid)
+            if ch:
+                try:
+                    msg = await ch.fetch_message(mid)
+                    await msg.delete()
+                except discord.DiscordException:
+                    pass
+            _alert_now.pop(okey, None)
+
     for guild in bot.guilds:
         cfg = store.guild_config(guild.id)
         chan_id = cfg.get("board_channel_id")
@@ -353,20 +600,57 @@ async def scheduler_tick():
             role_id = ping_role_id(guild.id, scope)
             if not role_id:
                 continue
-            for offset, when in ((60, "in 1 hour"), (0, "starting now")):
+            is_kvk = e.get("schedule", {}).get("type") == "kvk"
+            # KvK: start-only alerts; others: 1h + now
+            offsets = ((0, "starting now"),) if is_kvk else ((60, "in 1 hour"), (0, "starting now"))
+            for offset, when in offsets:
                 target = now + timedelta(minutes=offset)
                 for dt in sched.occurrences_between(e, target, target):
-                    key = f"{e['id']}|{dt.isoformat()}|{offset}"
-                    if key in _fired:
+                    okey = f"{e['id']}|{dt.isoformat()}"
+                    fkey = f"{okey}|{offset}"
+                    if fkey in _fired:
                         continue
-                    _fired.add(key)
+                    _fired.add(fkey)
+                    text = _alert_text(e, scope, role_id, when, dt, is_kvk)
                     try:
-                        await channel.send(
-                            f"<@&{role_id}> **{e['name']}** ({scope_label(scope)}) {when} — {ts_both(dt)}")
+                        msg = await channel.send(text)
                     except discord.DiscordException as ex:
-                        log.error("ping send failed: %s", ex)
+                        log.error("alert send failed: %s", ex)
+                        continue
+                    if offset == 60:
+                        _alert_1h[okey] = msg.id
+                    else:
+                        # NOW fired → delete the earlier 1h alert if present
+                        old = _alert_1h.pop(okey, None)
+                        if old:
+                            try:
+                                m = await channel.fetch_message(old)
+                                await m.delete()
+                            except discord.DiscordException:
+                                pass
+                        # schedule this NOW alert to self-delete after duration
+                        # (KvK stage alerts persist — no expiry entry)
+                        if not is_kvk:
+                            expire = dt + timedelta(minutes=_event_duration_min(e))
+                            _alert_now[okey] = (channel.id, msg.id, expire)
     if len(_fired) > 5000:
         _fired.clear()
+
+
+def _alert_text(e, scope, role_id, when, dt, is_kvk):
+    """Compose the alert message. KvK alerts name the current stage + its end."""
+    if is_kvk:
+        short = e["schedule"]["short"]
+        kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+        stage = next((s for s in kvk.compute_stages(short, kstart)
+                      if s["start"] == dt), None)
+        if stage:
+            title = stage["title"]
+            parent = f" · {stage['parent']}" if stage.get("parent") else ""
+            act = f"\n▸ {stage['actionable']}" if stage.get("actionable") else ""
+            return (f"<@&{role_id}> **{e['name']}** — stage **{title}**{parent} starts {ts_both(dt)}\n"
+                    f"_{stage.get('summary','')}_ · ends {ts(stage['end'], 'F')}{act}")
+    return f"<@&{role_id}> **{e['name']}** ({scope_label(scope)}) {when} — {ts_both(dt)}"
 
 
 # ── "My Alliance Events" button (persistent) ─────────────────────────────────

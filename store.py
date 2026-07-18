@@ -116,3 +116,20 @@ def remove_event(event_id: str, guild_id: int) -> bool:
         ]
         _write(EVENTS_PATH, data)
         return len(data["events"]) < before
+
+
+def update_event(event_id: str, guild_id: int, changes: dict) -> dict | None:
+    """Shallow-merge `changes` into the matching event. Returns the updated
+    event, or None if not found. Nested `schedule` keys merge, not replace."""
+    with _lock:
+        data = _read(EVENTS_PATH, {"events": []})
+        for e in data["events"]:
+            if e["id"] == event_id and e.get("guild_id") == str(guild_id):
+                for k, v in changes.items():
+                    if k == "schedule" and isinstance(v, dict) and isinstance(e.get("schedule"), dict):
+                        e["schedule"].update(v)
+                    else:
+                        e[k] = v
+                _write(EVENTS_PATH, data)
+                return e
+        return None

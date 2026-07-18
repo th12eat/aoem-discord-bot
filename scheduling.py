@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import kvk
+
 
 def _utc(dt: datetime) -> datetime:
     """Ensure a datetime is timezone-aware in UTC."""
@@ -43,24 +45,37 @@ def occurrences_between(event: dict, start: datetime, end: datetime) -> list[dat
             out.append(dt)
         return out
 
-    # daily / weekly / everyother all iterate day-by-day across the window
-    times = [_parse_hhmm(t) for t in sched.get("times", [])]
-    days = sched.get("days")  # None for daily; list of weekdays for weekly
+    if stype == "kvk":
+        # a KvK "fires" at each stage START (the alertable moments)
+        kstart = _utc(datetime.fromisoformat(sched["start"]))
+        for st in kvk.compute_stages(sched["short"], kstart):
+            if start <= st["start"] <= end:
+                out.append(st["start"])
+        return sorted(out)
 
-    # every-other-day: fires only on days an even number of days after `anchor`
+    # daily / weekly / everyother / everyotherweek iterate day-by-day
+    times = [_parse_hhmm(t) for t in sched.get("times", [])]
+    days = sched.get("days")  # None for daily; list of weekdays for weekly variants
+
+    # anchored variants: fire relative to an anchor date
     anchor_date = None
-    if stype == "everyother":
+    if stype in ("everyother", "everyotherweek"):
         anchor_date = datetime.fromisoformat(sched["anchor"]).date()
 
     day = start.date()
     last = end.date()
     while day <= last:
         fires = True
+        wd = datetime(day.year, day.month, day.day).weekday()
         if stype == "weekly":
-            fires = datetime(day.year, day.month, day.day).weekday() in days
+            fires = wd in days
         elif stype == "everyother":
             delta = (day - anchor_date).days
             fires = delta >= 0 and delta % 2 == 0
+        elif stype == "everyotherweek":
+            # every 14 days from the anchor's week, on the listed weekday(s)
+            delta = (day - anchor_date).days
+            fires = delta >= 0 and (delta // 7) % 2 == 0 and (not days or wd in days)
         # stype == "daily" → fires every day
         if fires:
             for h, m in times:

@@ -92,8 +92,13 @@ def describe_schedule(schedule: dict) -> str:
         return f"daily · {times} UTC"
     if t == "everyother":
         return f"every other day (from {schedule.get('anchor', '?')}) · {times} UTC"
+    names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     if t == "weekly":
-        names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         days = "/".join(names[d] for d in schedule.get("days", []))
         return f"weekly · {days} · {times} UTC"
+    if t == "everyotherweek":
+        days = "/".join(names[d] for d in schedule.get("days", []))
+        return f"every other week · {days} · {times} UTC (from {schedule.get('anchor','?')})"
+    if t == "kvk":
+        return f"multi-day KvK · starts {schedule.get('start','?')}"
     return "unknown schedule"
