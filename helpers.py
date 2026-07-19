@@ -101,4 +101,8 @@ def describe_schedule(schedule: dict) -> str:
         return f"every other week · {days} · {times} UTC (from {schedule.get('anchor','?')})"
     if t == "kvk":
         return f"multi-day KvK · starts {schedule.get('start','?')}"
+    if t == "series":
+        times = ", ".join(schedule.get("times", []))
+        when = f"{times} UTC" if times else "time TBD (no ping until set)"
+        return f"weekly series · next {schedule.get('date','?')} · {when}"
     return "unknown schedule"

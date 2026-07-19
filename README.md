@@ -26,8 +26,33 @@ Admin (Manage Server):
 Admin (R4 for the scope, or Manage Server):
 | Command | Purpose |
 |---|---|
-| `/event_add` | add an event: scope, recurrence (once/daily/weekly), UTC times |
+| `/event_add` | add an event: scope, recurrence (once/daily/weekly/every-other), UTC times, duration |
+| `/server_event_add` | curated server "opening" event (date range) |
+| `/alliance_event_add` | curated alliance leadership event (specific time) |
+| `/kvk_add` | multi-day KvK; stages auto-mapped from a start date |
+| `/series_setup` | seed the rolling weekly server events (see **Weekly series**) |
+| `/event_edit` | edit an event's name / time / duration / scope |
 | `/event_remove` | remove an event by id |
+
+For a one-off with a **custom name**, use `/event_add` — the curated commands
+(`/server_event_add`, `/alliance_event_add`) no longer carry a "Custom…" option.
+
+### Weekly series (rolling)
+`/series_setup` seeds recurring **server** events that land on the same weekday(s)
+each week but whose **time varies** per week. Only the *next* occurrence is ever
+live; the bot rolls it forward at UTC midnight once its day ends, so the dropdowns
+and event log never fill with future dates.
+
+| Series | Cadence | Time |
+|---|---|---|
+| Imperial Showdown | Sundays, **except TME weeks** (detected from the KvK log) | set per week |
+| City Clash | Saturdays | set per week |
+| World Campaign | Wednesdays & Sundays (4h) | set per week |
+| Starfall Vein | Wednesdays | **fixed** 02:00 / 05:00 / 11:00 / 19:00 UTC |
+
+A series shows on the board even before a time is set, but **won't ping until an
+R4 sets the time** via `/event_edit` (fixed-time series like Starfall Vein ping
+automatically). Set one or more comma-separated `HH:MM` times.
 
 Member (replies are **ephemeral** — only you see them; scoped to what you can view):
 | Command | Purpose |
@@ -49,6 +74,9 @@ Member (replies are **ephemeral** — only you see them; scoped to what you can 
   for the next UTC rollover.)
 - **World Campaign** is a **4-hour** event: `/alliance_event_add` for it defaults
   to a 240-minute window (override with the `duration` field).
+- **Series roll-forward:** at the UTC-midnight rollover, any series whose day has
+  passed advances to its next matching weekday and resets its time (fixed series
+  re-fill; others go back to TBD).
 
 ## First-run setup (in Discord, as a Manage-Server user)
 1. `/config server_member_role:@eRa8 board_channel:#event-scheduler`

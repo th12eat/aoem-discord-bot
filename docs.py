@@ -8,10 +8,22 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.3.0 — Recurring weekly series**
+• `/series_setup` seeds the rolling weekly server events: **Imperial Showdown**
+  (Sundays, skips TME weeks), **City Clash** (Saturdays), **World Campaign**
+  (Wed & Sun, 4h), **Starfall Vein** (Wednesdays, fixed 02/05/11/19 UTC).
+• Only the **next** occurrence is ever live — it rolls forward automatically once
+  its day ends, so the dropdowns/log never fill with future dates.
+• Series show on the board even before a time is set, but **don't ping until an
+  R4 sets the time** via `/event_edit` (Starfall's fixed times ping on their own).
+• `/event_add` gained a **duration** field; the redundant **Custom…** option was
+  removed from `/server_event_add` and `/alliance_event_add` — use `/event_add`
+  for one-off custom names.
 
 **v1.2.0 — Board housekeeping**
 • #event-scheduler now **auto-clears daily** at 00:00 UTC — only the pinned board (this message) stays.
@@ -43,8 +55,10 @@ Each command notes its **scope** and **who can use it**.
 **📣 Server-wide events — _any R4_ (or Manage Server)**
 Pings @eRa8; any alliance's R4 may create/edit these.
 • `/server_event_add` — announce an event **opening** (date range). *[Server]*
-• `/event_add` (scope: Server-wide) — recurring/one-time server event. *[Server]*
+• `/event_add` (scope: Server-wide) — recurring/one-time server event (+ duration). *[Server]*
 • `/kvk_add` — multi-day KvK (TME/GE/BC/PC/DD); stages auto-derived from the start date. *[Server]*
+• `/series_setup` — seed the rolling weekly events (Imperial Showdown, City Clash,
+  World Campaign, Starfall Vein). Run once; they auto-advance each week. *[Server]*
 
 **🏰 Alliance events — _that alliance's R4 only_ (or Manage Server)**
 Pings that alliance's member role; only its R4 may create/edit.
@@ -61,7 +75,15 @@ Replies are **private to you** and only show what your roles allow.
 • `/event_list` · `/next` · `/today` · `/week`
 • **My Alliance Events** button — your alliance's today + tomorrow.
 
+**🔁 Weekly series (rolling)**
+Seeded by `/series_setup`; each shows the **next** date and advances automatically:
+• **Imperial Showdown** — Sundays, except TME weeks. • **City Clash** — Saturdays.
+• **World Campaign** — Wednesdays & Sundays (4h). • **Starfall Vein** — Wednesdays (fixed times).
+Most have a **variable time**: they appear on the board as "time TBD" and **won't
+ping** until an R4 sets the time with `/event_edit` (Starfall pings automatically).
+
 **ℹ️ Notes**
-• **World Campaign** runs **4 hours** — alliance events for it default to a 4h window.
+• **World Campaign** runs **4 hours** — its events default to a 4h window.
+• For a one-off with a **custom name**, use `/event_add` (Custom… was removed from the curated commands).
 • The board shows **server-wide** events publicly; alliance events stay private (use the button).
 • This channel auto-clears daily at 00:00 UTC — only this board message persists."""

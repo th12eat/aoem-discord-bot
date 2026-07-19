@@ -9,11 +9,13 @@ may manage). Manage-Server is always a safety hatch.
 Admin:
   /config             server @eRa8 role + board channel
   /config_alliance    register an alliance's R4 role + member role
-  /event_add          generic event (scope, once/daily/weekly/every-other, UTC)
+  /event_add          generic event (scope, once/daily/weekly/every-other, UTC, duration)
   /server_event_add   server "opening soon" event (date range, pings everyone)
   /alliance_event_add alliance leadership event (specific date/time)
   /legion_add         WC/BoD legion event (every-other-week, Sat/Sun, fixed times)
   /kvk_add            multi-day KvK; stages auto-mapped from a start date
+  /series_setup       seed rolling weekly server events (only next occ live; time
+                      TBD = no ping until set; Imperial Showdown skips TME weeks)
   /event_edit         edit name / time / duration / scope
   /event_remove       delete an event
 Member (ephemeral, scoped to what the viewer may see):
@@ -47,6 +49,7 @@ import store
 import scheduling as sched
 import kvk
 import catalog
+import series as series_mod
 import docs
 from alliances import ALLIANCES, SERVER_SCOPE, SCOPES, scope_label, scope_display
 from helpers import (ts, ts_both, describe_schedule, can_admin_scope, can_view_scope,
@@ -161,6 +164,7 @@ async def config_alliance(interaction: discord.Interaction,
     times="UTC time(s), comma HH:MM — e.g. 03:00,13:00,21:00",
     weekdays="Weekly only: Mon,Tue,Wed,Thu,Fri,Sat,Sun",
     date="One-time date, or every-other-day start date: UTC YYYY-MM-DD",
+    duration="Minutes the event runs (default 60)",
 )
 @app_commands.choices(
     scope=_SCOPE_CHOICES,
@@ -175,7 +179,8 @@ async def event_add(interaction: discord.Interaction,
                     recurrence: app_commands.Choice[str],
                     times: str,
                     weekdays: str | None = None,
-                    date: str | None = None):
+                    date: str | None = None,
+                    duration: int | None = None):
     if not can_admin_scope(interaction.user, scope.value):
         who = "any R4" if scope.value == SERVER_SCOPE else f"{scope.value} R4"
         return await interaction.response.send_message(
@@ -239,6 +244,7 @@ async def event_add(interaction: discord.Interaction,
         "name": name,
         "scope": scope.value,
         "schedule": schedule,
+        "duration": max(1, duration) if duration else 60,
         "created_by": str(interaction.user.id),
     }
 
@@ -289,20 +295,18 @@ def _mk_event(interaction, name, scope, schedule, **extra):
 
 
 # ── /server_event_add — "opening soon", date RANGE, pings everyone ───────────
-_SERVER_EVENT_CHOICES = [app_commands.Choice(name=n, value=n) for n in catalog.SERVER_EVENTS] + \
-                        [app_commands.Choice(name=catalog.CUSTOM, value=catalog.CUSTOM)]
+# Curated names only; for a one-off custom name use /event_add instead.
+_SERVER_EVENT_CHOICES = [app_commands.Choice(name=n, value=n) for n in catalog.SERVER_EVENTS]
 
 @bot.tree.command(name="server_event_add", description="Announce a server-wide event opening (date range).")
-@app_commands.describe(event="Event (or Custom…)", start_date="Opens UTC YYYY-MM-DD",
-                       end_date="Closes UTC YYYY-MM-DD", custom_name="If Custom: the event name")
+@app_commands.describe(event="Event", start_date="Opens UTC YYYY-MM-DD",
+                       end_date="Closes UTC YYYY-MM-DD")
 @app_commands.choices(event=_SERVER_EVENT_CHOICES)
 async def server_event_add(interaction: discord.Interaction, event: app_commands.Choice[str],
-                           start_date: str, end_date: str, custom_name: str | None = None):
+                           start_date: str, end_date: str):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
         return await interaction.response.send_message("Only an R4 can add server events.", ephemeral=True)
-    name = custom_name if event.value == catalog.CUSTOM else event.value
-    if not name:
-        return await interaction.response.send_message("⚠️ Provide a `custom_name` for a Custom event.", ephemeral=True)
+    name = event.value
     try:
         s = datetime.fromisoformat(f"{start_date}T00:00"); datetime.fromisoformat(f"{end_date}T00:00")
     except ValueError:
@@ -314,23 +318,20 @@ async def server_event_add(interaction: discord.Interaction, event: app_commands
 
 
 # ── /alliance_event_add — leadership actionable, specific date/time ──────────
-_ALLI_EVENT_CHOICES = [app_commands.Choice(name=n, value=n) for n in catalog.ALLIANCE_EVENTS] + \
-                      [app_commands.Choice(name=catalog.CUSTOM, value=catalog.CUSTOM)]
+# Curated names only; for a one-off custom name use /event_add instead.
+_ALLI_EVENT_CHOICES = [app_commands.Choice(name=n, value=n) for n in catalog.ALLIANCE_EVENTS]
 
 @bot.tree.command(name="alliance_event_add", description="Add an alliance leadership event (specific time).")
-@app_commands.describe(alliance="Which alliance", event="Event (or Custom…)",
-                       date="UTC YYYY-MM-DD", time="UTC HH:MM", duration="Minutes (default 60)",
-                       custom_name="If Custom: the event name")
+@app_commands.describe(alliance="Which alliance", event="Event",
+                       date="UTC YYYY-MM-DD", time="UTC HH:MM", duration="Minutes (default 60)")
 @app_commands.choices(alliance=_ALLIANCE_CHOICES, event=_ALLI_EVENT_CHOICES)
 async def alliance_event_add(interaction: discord.Interaction, alliance: app_commands.Choice[str],
                              event: app_commands.Choice[str], date: str, time: str,
-                             duration: int | None = None, custom_name: str | None = None):
+                             duration: int | None = None):
     if not can_admin_scope(interaction.user, alliance.value):
         return await interaction.response.send_message(
             f"Only {alliance.value} R4 can add {alliance.value} events.", ephemeral=True)
-    name = custom_name if event.value == catalog.CUSTOM else event.value
-    if not name:
-        return await interaction.response.send_message("⚠️ Provide a `custom_name` for a Custom event.", ephemeral=True)
+    name = event.value
     try:
         datetime.fromisoformat(f"{date}T{time}")
     except ValueError:
@@ -398,6 +399,71 @@ async def kvk_add(interaction: discord.Interaction, event: app_commands.Choice[s
     await refresh_board(interaction.guild)
 
 
+# ── weekly series (rolling) ──────────────────────────────────────────────────
+#   A series is one persistent event whose single next occurrence rolls forward
+#   the moment its day completes (UTC). Time is TBD (no ping) until an R4 sets it
+#   via /event_edit — except `fixed` series (Starfall Vein) which pre-fill their
+#   known times and ping automatically. Imperial Showdown skips TME invasion
+#   Sundays, detected from this guild's KvK event log.
+def _tme_skip_predicate(guild_id: int):
+    """Return skip(d)->bool that's True on any TME *invasion* day, derived from
+    TME KvK events in this guild's log (so Imperial Showdown avoids that Sunday)."""
+    tme_starts = []
+    for e in store.events_for_guild(guild_id):
+        s = e.get("schedule", {})
+        if s.get("type") == "kvk" and s.get("short") == "TME":
+            try:
+                tme_starts.append(datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc))
+            except (ValueError, KeyError):
+                pass
+
+    def skip(d):
+        return any(kvk.stage_active_on("TME", st, d, stage_keys={"inv"}) for st in tme_starts)
+    return skip
+
+
+def _seed_series_event(guild_id: int, name: str) -> dict | None:
+    """Create the next occurrence of a series (if not already present). Returns
+    the event, or None if no future date could be computed."""
+    skip = _tme_skip_predicate(guild_id) if catalog.SERIES.get(name, {}).get("skipTme") else None
+    today = datetime.now(timezone.utc).date()
+    # roll from yesterday so an event *today* is still seeded as the current one
+    nxt = series_mod.next_date(name, today - timedelta(days=1), skip=skip)
+    if not nxt:
+        return None
+    ev = {"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id), "name": name,
+          "scope": SERVER_SCOPE, "schedule": series_mod.make_occurrence(name, nxt),
+          "duration": catalog.SERIES[name].get("duration", 60), "series_auto": True,
+          "created_by": "system"}
+    store.add_event(ev)
+    return ev
+
+
+@bot.tree.command(name="series_setup", description="Seed the recurring weekly server events (Imperial Showdown, City Clash, …).")
+async def series_setup(interaction: discord.Interaction):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can set up series events.", ephemeral=True)
+    existing = {e["name"] for e in store.events_for_guild(interaction.guild_id)
+                if e.get("schedule", {}).get("type") == "series"}
+    added, skipped = [], []
+    for name in catalog.SERIES:
+        if name in existing:
+            skipped.append(name)
+            continue
+        ev = _seed_series_event(interaction.guild_id, name)
+        if ev:
+            added.append(f"**{name}** — {describe_schedule(ev['schedule'])}")
+    msg = "✅ Series events seeded.\n"
+    if added:
+        msg += "\n".join(f"• {a}" for a in added)
+    if skipped:
+        msg += f"\n\n_Already present (unchanged):_ {', '.join(skipped)}"
+    if not added and not skipped:
+        msg = "No series are defined."
+    await interaction.response.send_message(msg, ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
 # ── /event_remove ────────────────────────────────────────────────────────────
 def _short_schedule(schedule: dict) -> str:
     """Compact schedule for an autocomplete label (no dynamic timestamps there)."""
@@ -418,6 +484,8 @@ def _short_schedule(schedule: dict) -> str:
         return f"EOW {days} {times} UTC"
     if t == "kvk":
         return f"KvK from {schedule.get('start','?')[:10]}"
+    if t == "series":
+        return f"series {schedule.get('date','?')} " + (f"{times} UTC" if times else "· TBD")
     return times
 
 
@@ -489,12 +557,17 @@ async def event_edit(interaction: discord.Interaction, event: str,
     if scope:
         changes["scope"] = scope.value
     if time:
+        # accept one or more comma-separated HH:MM (a series occurrence can have
+        # several, e.g. Starfall Vein's four windows)
+        tlist = [x.strip() for x in time.split(",") if x.strip()]
         try:
-            h, m = time.split(":");  assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+            for x in tlist:
+                h, m = x.split(":");  assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+            assert tlist
         except (ValueError, AssertionError):
-            return await interaction.response.send_message("⚠️ `time` must be `HH:MM` (24h UTC).", ephemeral=True)
-        if stype in ("daily", "weekly", "everyother", "everyotherweek"):
-            changes["schedule"] = {"times": [time]}
+            return await interaction.response.send_message("⚠️ `time` must be one or more `HH:MM` (24h UTC), comma-separated.", ephemeral=True)
+        if stype in ("daily", "weekly", "everyother", "everyotherweek", "series"):
+            changes["schedule"] = {"times": tlist}
         else:
             return await interaction.response.send_message(
                 "⚠️ This event isn't recurring — use `datetime_` to move it.", ephemeral=True)
@@ -713,6 +786,22 @@ class BoardView(discord.ui.View):
         await interaction.response.send_message(docs.HOWTO, ephemeral=True)
 
 
+def _tbd_series_on(evs: list[dict], day_start: datetime) -> list[dict]:
+    """Series events that land on `day_start`'s UTC date but have no times set
+    (so occurrences_between yields nothing) — shown on the board as 'time TBD'."""
+    d = day_start.date()
+    out = []
+    for e in evs:
+        s = e.get("schedule", {})
+        if s.get("type") == "series" and not s.get("times"):
+            try:
+                if datetime.fromisoformat(s["date"]).date() == d:
+                    out.append(e)
+            except (ValueError, KeyError):
+                pass
+    return out
+
+
 # ── board channel: server-wide events only (alliance events via the button) ──
 async def refresh_board(guild: discord.Guild):
     cfg = store.guild_config(guild.id)
@@ -729,12 +818,14 @@ async def refresh_board(guild: discord.Guild):
 
     def block(title, start, end):
         pairs = sched.occurrences_for_events(evs, start, end)
-        if not pairs:
+        rows = [f"• {ts(dt, 't')} — **{e['name']}** ({ts(dt,'R')})" for dt, e in pairs]
+        # TBD-time series land on their day but have no fire-times: show them as a
+        # "time TBD" note so people know they're happening (they just aren't pinged).
+        rows += [f"• ⏳ **{e['name']}** — _time TBD (set it to enable alerts)_"
+                 for e in _tbd_series_on(evs, start)]
+        if not rows:
             return f"__{title}__\n*(none)*"
-        rows = "\n".join(
-            f"• {ts(dt, 't')} — **{e['name']}** ({ts(dt,'R')})"
-            for dt, e in pairs)
-        return f"__{title}__\n{rows}"
+        return f"__{title}__\n" + "\n".join(rows)
 
     content = (f"📅 **Event Board** (server-wide) — updated {ts(now, 'F')}\n\n"
                f"{block('Today (UTC)', d0s, d0e)}\n\n"
@@ -815,7 +906,32 @@ async def daily_clear():
         return
     _last_clear_date = today
     for guild in bot.guilds:
+        roll_series(guild.id)          # advance any series whose day has passed
         await clear_board_channel(guild)
+
+
+def roll_series(guild_id: int):
+    """Advance each series event whose stored date is now in the past to its next
+    matching weekday, resetting the time (fixed series re-fill; others go TBD).
+    Runs at the UTC-midnight rollover so the log only ever holds the next one."""
+    today = datetime.now(timezone.utc).date()
+    for e in store.events_for_guild(guild_id):
+        s = e.get("schedule", {})
+        if s.get("type") != "series":
+            continue
+        try:
+            occ = datetime.fromisoformat(s["date"]).date()
+        except (ValueError, KeyError):
+            continue
+        if occ >= today:
+            continue  # still upcoming (or today) — leave it
+        name = s.get("series")
+        skip = _tme_skip_predicate(guild_id) if catalog.SERIES.get(name, {}).get("skipTme") else None
+        nxt = series_mod.next_date(name, today - timedelta(days=1), skip=skip)
+        if not nxt:
+            continue
+        store.update_event(e["id"], guild_id,
+                           {"schedule": series_mod.make_occurrence(name, nxt)})
 
 
 @bot.command(name="ping")

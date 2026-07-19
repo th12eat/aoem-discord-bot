@@ -107,3 +107,16 @@ def compute_stages(short: str, start: datetime) -> list[dict]:
 
 def total_days(short: str) -> int:
     return sum(l["days"] for l in _leaves(KVK_DEFS[short]))
+
+
+def stage_active_on(short: str, start: datetime, target, stage_keys=None) -> bool:
+    """True if any stage (optionally limited to `stage_keys`) of this KvK is
+    active on the `target` date. Used to detect a 'TME week' — pass
+    stage_keys={'inv'} to test only the invasion day, or None for the whole run.
+    `target` is a date; a stage covers [start_day, end_day)."""
+    for st in compute_stages(short, start):
+        if stage_keys and st["key"] not in stage_keys:
+            continue
+        if st["start"].date() <= target < st["end"].date():
+            return True
+    return False

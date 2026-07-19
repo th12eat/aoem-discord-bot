@@ -15,7 +15,7 @@ timezone-aware UTC datetimes when the event fires in the window. Everything else
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import kvk
 
@@ -51,6 +51,16 @@ def occurrences_between(event: dict, start: datetime, end: datetime) -> list[dat
         for st in kvk.compute_stages(sched["short"], kstart):
             if start <= st["start"] <= end:
                 out.append(st["start"])
+        return sorted(out)
+
+    if stype == "series":
+        # a rolling weekly event: fires only on its single stored date, at each
+        # of its times. Empty times → no fire-times (shown on board, not pinged).
+        d = date.fromisoformat(sched["date"])
+        for h, m in [_parse_hhmm(t) for t in sched.get("times", [])]:
+            dt = datetime(d.year, d.month, d.day, h, m, tzinfo=timezone.utc)
+            if start <= dt <= end:
+                out.append(dt)
         return sorted(out)
 
     # daily / weekly / everyother / everyotherweek iterate day-by-day
