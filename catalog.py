@@ -13,7 +13,7 @@ SERVER_EVENTS = [
 # Alliance leadership actionable events (specific date/time).
 ALLIANCE_EVENTS = [
     "Warrior's Trial", "Fallen Frontier", "Treasure Hunt", "World Campaign",
-    "Marauder's",
+    "Marauder's", "Trojan Turmoil",
 ]
 
 # Weekly legion events — every other week, opposite each other.
