@@ -25,7 +25,10 @@ Background:
     the event's duration (default 60 min). KvK stages alert at each stage start
     (no T-1h, no auto-delete) and carry the stage's end + actionable info.
   - #event-scheduler board auto-updates: today's + tomorrow's events, rolling
-    over at UTC midnight (Catherine-only writes)
+    over at UTC midnight (Catherine-only writes). Board buttons (all ephemeral):
+    My Alliance Events, Changelog, How to use.
+  - daily clear: at 00:00 UTC the board channel is purged of everything except
+    the board message, then the board is re-posted (needs Manage Messages).
 
 All times stored + entered in UTC; shown via Discord dynamic timestamps.
 """
@@ -44,6 +47,7 @@ import store
 import scheduling as sched
 import kvk
 import catalog
+import docs
 from alliances import ALLIANCES, SERVER_SCOPE, SCOPES, scope_label, scope_display
 from helpers import (ts, ts_both, describe_schedule, can_admin_scope, can_view_scope,
                      ping_role_id, is_any_r4)
@@ -98,6 +102,8 @@ async def on_ready():
         scheduler_tick.start()
     if not board_refresh.is_running():
         board_refresh.start()
+    if not daily_clear.is_running():
+        daily_clear.start()
     log.info("Ready.")
 
 
@@ -330,8 +336,9 @@ async def alliance_event_add(interaction: discord.Interaction, alliance: app_com
     except ValueError:
         return await interaction.response.send_message("⚠️ Use date `YYYY-MM-DD` and time `HH:MM`.", ephemeral=True)
     schedule = {"type": "once", "datetime": f"{date}T{time}"}
-    ev = _mk_event(interaction, name, alliance.value, schedule, duration=duration or 60)
-    await _finalize_add(interaction, ev, f"{describe_schedule(schedule)} · {duration or 60}min")
+    dur = duration or catalog.default_duration(name)  # World Campaign → 240 (4h)
+    ev = _mk_event(interaction, name, alliance.value, schedule, duration=dur)
+    await _finalize_add(interaction, ev, f"{describe_schedule(schedule)} · {dur}min")
 
 
 # ── /legion_add — WC/BoD, every other week, Sat/Sun, fixed times ─────────────
@@ -693,6 +700,18 @@ class BoardView(discord.ui.View):
             f"{block('Tomorrow (UTC)', d1s, d1e)}",
             ephemeral=True)
 
+    @discord.ui.button(label="Changelog", emoji="📜",
+                       style=discord.ButtonStyle.secondary,
+                       custom_id="board:changelog")
+    async def changelog(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(docs.CHANGELOG, ephemeral=True)
+
+    @discord.ui.button(label="How to use", emoji="❓",
+                       style=discord.ButtonStyle.secondary,
+                       custom_id="board:howto")
+    async def howto(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(docs.HOWTO, ephemeral=True)
+
 
 # ── board channel: server-wide events only (alliance events via the button) ──
 async def refresh_board(guild: discord.Guild):
@@ -741,6 +760,62 @@ async def refresh_board(guild: discord.Guild):
 async def board_refresh():
     for guild in bot.guilds:
         await refresh_board(guild)
+
+
+# ── daily board-channel clear at UTC midnight ────────────────────────────────
+#   Wipes #event-scheduler each UTC day so only the persistent board message (the
+#   one with the buttons) remains. Transient alerts + any chatter are removed.
+#   Runs once per UTC date (tracked in _last_clear_date); the board is re-posted
+#   fresh afterward so its buttons keep working.
+_last_clear_date = None  # date object of the last successful clear
+
+
+async def clear_board_channel(guild: discord.Guild):
+    """Delete every message in the board channel except the board message, then
+    re-render the board so today's/tomorrow's events + buttons are present."""
+    cfg = store.guild_config(guild.id)
+    chan_id = cfg.get("board_channel_id")
+    channel = guild.get_channel(chan_id) if chan_id else None
+    if channel is None:
+        return
+    keep_id = cfg.get("board_message_id")
+
+    def _keep(m: discord.Message) -> bool:
+        return m.id != keep_id  # purge everything but the board message
+
+    try:
+        # bulk delete handles <14-day-old messages; a daily clear never leaves
+        # anything older, but fall back to per-message delete just in case.
+        await channel.purge(limit=None, check=_keep, bulk=True)
+    except discord.HTTPException as ex:
+        log.warning("board channel purge (bulk) failed, trying per-message: %s", ex)
+        try:
+            async for m in channel.history(limit=None):
+                if m.id != keep_id:
+                    try:
+                        await m.delete()
+                    except discord.DiscordException:
+                        pass
+        except discord.DiscordException as ex2:
+            log.error("board channel clear failed: %s", ex2)
+    # re-post/refresh the board so it (and its buttons) survive the wipe
+    await refresh_board(guild)
+
+
+@tasks.loop(minutes=1)
+async def daily_clear():
+    global _last_clear_date
+    today = datetime.now(timezone.utc).date()
+    if _last_clear_date == today:
+        return
+    # first tick after (re)start seeds the marker without clearing, so a restart
+    # mid-day doesn't wipe the channel; the wipe happens at the next UTC rollover.
+    if _last_clear_date is None:
+        _last_clear_date = today
+        return
+    _last_clear_date = today
+    for guild in bot.guilds:
+        await clear_board_channel(guild)
 
 
 @bot.command(name="ping")

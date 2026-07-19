@@ -41,7 +41,14 @@ Member (replies are **ephemeral** — only you see them; scoped to what you can 
 - **Pings** the scope's role at **T-1h** and **at start** in the board channel.
 - **Board** (`#event-scheduler`): a single Catherine-owned message showing
   **today's + tomorrow's** events (labeled by scope), auto-refreshing every 10
-  min and rolling over at UTC midnight.
+  min and rolling over at UTC midnight. It carries three buttons — **My Alliance
+  Events**, **Changelog**, **How to use** — whose replies are all ephemeral.
+- **Daily channel clear:** at **00:00 UTC** the board channel is wiped so only the
+  board message survives; transient alerts + any chatter are cleared, then the
+  board is re-posted fresh. (A mid-day restart never triggers a wipe — it waits
+  for the next UTC rollover.)
+- **World Campaign** is a **4-hour** event: `/alliance_event_add` for it defaults
+  to a 240-minute window (override with the `duration` field).
 
 ## First-run setup (in Discord, as a Manage-Server user)
 1. `/config server_member_role:@eRa8 board_channel:#event-scheduler`
@@ -64,7 +71,8 @@ python bot.py
 - **Bot → Privileged Gateway Intents:** enable **Message Content** AND
   **Server Members Intent** (the latter is needed to read who has which role).
 - **Invite scopes:** `bot` + `applications.commands`; permissions: Send Messages,
-  Read Message History, Mention Everyone (for role pings).
+  Read Message History, Mention Everyone (for role pings), **Manage Messages**
+  (needed for the daily board-channel clear).
 
 ## Data
 `data/config.json` (roles/channel per guild) and `data/events.json` (events) —

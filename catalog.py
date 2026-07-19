@@ -25,4 +25,16 @@ LEGION_EVENTS = {
 # Legion events can only run Sat/Sun at these UTC times.
 LEGION_TIMES = ["01:00", "04:00", "11:00", "19:00"]
 
+# Known event durations (minutes). Events not listed default to 60.
+# World Campaign is a 4-hour window.
+EVENT_DURATIONS = {
+    "World Campaign": 240,
+}
+
+
+def default_duration(name: str) -> int:
+    """Default duration in minutes for a named event (60 if unknown)."""
+    return EVENT_DURATIONS.get(name, 60)
+
+
 CUSTOM = "Custom…"
