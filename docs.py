@@ -8,10 +8,19 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.4.0 — Personal lists + completed-event cleanup**
+• `/event_list`, `/next`, `/today`, `/week` are now **personal** — they show only
+  the events that pertain to *you* (the server + your own alliance, read from your
+  roles), instead of everything you could see.
+• **Completed events are gone for good:** once an event fully concludes it can no
+  longer be edited, stops appearing in any list/picker, and is auto-deleted at the
+  next UTC-midnight rollover (and on bot restart). A **KvK stays editable while
+  it's running** — it only locks once its final stage ends.
 
 **v1.3.0 — Recurring weekly series**
 • `/series_setup` seeds the rolling weekly server events: **Imperial Showdown**
@@ -70,8 +79,10 @@ Pings that alliance's member role; only its R4 may create/edit.
 • `/event_edit` — change an event's name, time, duration, or scope. *[scope of the event]*
 • `/event_remove` — delete an event. *[scope of the event]*
 
-**👀 Look up — _anyone who can see the event_**
-Replies are **private to you** and only show what your roles allow.
+**👀 Look up — _personal to you_**
+Replies are **private to you** and scoped to *your* events — the server plus your
+own alliance, read from your roles (a WorldClass member sees Server + WC1 only).
+Completed events never appear.
 • `/event_list` · `/next` · `/today` · `/week`
 • **My Alliance Events** button — your alliance's today + tomorrow.
 

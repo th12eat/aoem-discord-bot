@@ -52,8 +52,8 @@ import catalog
 import series as series_mod
 import docs
 from alliances import ALLIANCES, SERVER_SCOPE, SCOPES, scope_label, scope_display
-from helpers import (ts, ts_both, describe_schedule, can_admin_scope, can_view_scope,
-                     ping_role_id, is_any_r4)
+from helpers import (ts, ts_both, describe_schedule, can_admin_scope,
+                     ping_role_id, is_any_r4, member_alliances, r4_alliances)
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -107,6 +107,10 @@ async def on_ready():
         board_refresh.start()
     if not daily_clear.is_running():
         daily_clear.start()
+    # one-time housekeeping on startup: drop any events that concluded while the
+    # bot was down, so nothing stale lingers in the log until the next rollover.
+    for guild in bot.guilds:
+        purge_completed(guild.id)
     log.info("Ready.")
 
 
@@ -499,6 +503,8 @@ async def _remove_autocomplete(interaction: discord.Interaction, current: str):
         scope = e.get("scope", SERVER_SCOPE)
         if not can_admin_scope(interaction.user, scope):
             continue
+        if sched.is_completed(e, now):
+            continue  # completed events aren't editable/listable
         nxt = sched.next_occurrence(e, now)
         nxt_txt = nxt.strftime("%b %d %H:%M") if nxt else "past"
         # e.g. "[WC1] Trojan Turmoil · Mon/Wed/Fri 19:00 UTC · next Jul 20 19:00"
@@ -543,6 +549,10 @@ async def event_edit(interaction: discord.Interaction, event: str,
         return await interaction.response.send_message("⚠️ No matching event found.", ephemeral=True)
     if not can_admin_scope(interaction.user, ev.get("scope", SERVER_SCOPE)):
         return await interaction.response.send_message("You can't edit that event.", ephemeral=True)
+    # a completed event can't be edited (a KvK stays editable while running)
+    if sched.is_completed(ev, datetime.now(timezone.utc)):
+        return await interaction.response.send_message(
+            f"🔒 **{ev['name']}** has already completed — it can't be edited.", ephemeral=True)
     # changing scope requires admin over the NEW scope too
     if scope and not can_admin_scope(interaction.user, scope.value):
         return await interaction.response.send_message(
@@ -595,27 +605,48 @@ async def event_edit(interaction: discord.Interaction, event: str,
 
 
 # ── visibility filter for a viewer ───────────────────────────────────────────
-def _visible_events(member: discord.Member) -> list[dict]:
-    return [e for e in store.events_for_guild(member.guild.id)
-            if can_view_scope(member, e.get("scope", SERVER_SCOPE))]
+def _personal_scopes(member: discord.Member) -> set[str]:
+    """The scopes that PERTAIN TO this member: always the server, plus each
+    alliance they're in (by member role) or an R4 of. This is derived from their
+    roles — so a WorldClass member sees Server + WC1, nothing else. (Manage-Server
+    users are treated the same here; the personal lists are about relevance, not
+    permissions — admins use the edit/remove picker for cross-scope management.)"""
+    return {SERVER_SCOPE} | member_alliances(member) | r4_alliances(member)
+
+
+def _personal_events(member: discord.Member, drop_completed: bool = True) -> list[dict]:
+    """Events relevant to this member: their server + own-alliance scopes, with
+    completed events dropped (nothing lingers after it's over)."""
+    now = datetime.now(timezone.utc)
+    scopes = _personal_scopes(member)
+    out = []
+    for e in store.events_for_guild(member.guild.id):
+        if e.get("scope", SERVER_SCOPE) not in scopes:
+            continue
+        if drop_completed and sched.is_completed(e, now):
+            continue
+        out.append(e)
+    return out
 
 
 # ── member queries (ephemeral) ───────────────────────────────────────────────
-@bot.tree.command(name="event_list", description="List events you can see.")
+@bot.tree.command(name="event_list", description="List your events (server + your alliance).")
 async def event_list(interaction: discord.Interaction):
-    evs = _visible_events(interaction.user)
+    evs = _personal_events(interaction.user)
     if not evs:
-        return await interaction.response.send_message("No events you can see yet.", ephemeral=True)
+        return await interaction.response.send_message("No events for you right now.", ephemeral=True)
+    scopes = ", ".join(scope_label(s) for s in sorted(_personal_scopes(interaction.user)))
     lines = [f"• [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}** (`{e['id']}`) — "
              f"{describe_schedule(e['schedule'])}" for e in evs]
-    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+    await interaction.response.send_message(
+        f"📋 **Your events** ({scopes})\n" + "\n".join(lines), ephemeral=True)
 
 
 @bot.tree.command(name="next", description="Your next upcoming event.")
 async def next_cmd(interaction: discord.Interaction):
     now = datetime.now(timezone.utc)
     upcoming = []
-    for e in _visible_events(interaction.user):
+    for e in _personal_events(interaction.user):
         nxt = sched.next_occurrence(e, now)
         if nxt:
             upcoming.append((nxt, e))
@@ -639,7 +670,7 @@ async def week_cmd(interaction: discord.Interaction):
 
 
 async def _list_window(interaction, start, end, label):
-    evs = _visible_events(interaction.user)
+    evs = _personal_events(interaction.user)
     pairs = sched.occurrences_for_events(evs, start, end)
     if not pairs:
         return await interaction.response.send_message(f"No events {label.lower()}.", ephemeral=True)
@@ -907,7 +938,18 @@ async def daily_clear():
     _last_clear_date = today
     for guild in bot.guilds:
         roll_series(guild.id)          # advance any series whose day has passed
+        purge_completed(guild.id)      # drop events that have fully concluded
         await clear_board_channel(guild)
+
+
+def purge_completed(guild_id: int):
+    """Delete events that have fully completed — nothing is stored or listed after
+    it's over. Recurring/series events never complete, so they're never purged."""
+    now = datetime.now(timezone.utc)
+    for e in list(store.events_for_guild(guild_id)):
+        if sched.is_completed(e, now):
+            store.remove_event(e["id"], guild_id)
+            log.info("purged completed event %s (%s)", e.get("name"), e.get("id"))
 
 
 def roll_series(guild_id: int):

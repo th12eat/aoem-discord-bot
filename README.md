@@ -37,6 +37,12 @@ Admin (R4 for the scope, or Manage Server):
 For a one-off with a **custom name**, use `/event_add` — the curated commands
 (`/server_event_add`, `/alliance_event_add`) no longer carry a "Custom…" option.
 
+**Completed events** can't be edited and aren't listed anywhere: once an event
+fully concludes it drops out of every list + the edit/remove picker and is
+auto-deleted at the next UTC-midnight rollover (and on restart). A **KvK stays
+editable while running** — it only locks after its final stage ends. Recurring
+and rolling-series events never "complete."
+
 ### Weekly series (rolling)
 `/series_setup` seeds recurring **server** events that land on the same weekday(s)
 each week but whose **time varies** per week. Only the *next* occurrence is ever
@@ -54,10 +60,11 @@ A series shows on the board even before a time is set, but **won't ping until an
 R4 sets the time** via `/event_edit` (fixed-time series like Starfall Vein ping
 automatically). Set one or more comma-separated `HH:MM` times.
 
-Member (replies are **ephemeral** — only you see them; scoped to what you can view):
+Member (replies are **ephemeral** — only you see them; **personal**: the server +
+your own alliance, read from your roles; completed events excluded):
 | Command | Purpose |
 |---|---|
-| `/event_list` | events you can see |
+| `/event_list` | your events (server + your alliance) |
 | `/next` | your next upcoming event |
 | `/today` | today's events (UTC day) |
 | `/week` | this week's events (UTC week) |

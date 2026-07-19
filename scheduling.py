@@ -97,6 +97,45 @@ def occurrences_between(event: dict, start: datetime, end: datetime) -> list[dat
     return sorted(out)
 
 
+def is_completed(event: dict, now: datetime) -> bool:
+    """True once an event is fully in the past with nothing left to fire.
+
+    Recurring events (daily / weekly / every-other[-week] / rolling series) never
+    complete. One-time events complete after their datetime + duration (or, for a
+    date-range 'opening', after the rangeEnd day). A KvK completes after its final
+    stage ends — so it stays editable *while running* but not once concluded.
+    """
+    now = _utc(now)
+    sched = event.get("schedule", {})
+    stype = sched.get("type")
+
+    if stype == "once":
+        # opening-window events: done after the closing day ends
+        if sched.get("rangeEnd"):
+            try:
+                end = _utc(datetime.fromisoformat(sched["rangeEnd"] + "T00:00")) + timedelta(days=1)
+                return now >= end
+            except ValueError:
+                return False
+        try:
+            dt = _utc(datetime.fromisoformat(sched["datetime"]))
+        except (KeyError, ValueError):
+            return False
+        dur = int(event.get("duration", 60) or 60)
+        return now >= dt + timedelta(minutes=dur)
+
+    if stype == "kvk":
+        try:
+            kstart = _utc(datetime.fromisoformat(sched["start"]))
+        except (KeyError, ValueError):
+            return False
+        stages = kvk.compute_stages(sched["short"], kstart)
+        return bool(stages) and now >= stages[-1]["end"]
+
+    # recurring / series → never "completed"
+    return False
+
+
 def next_occurrence(event: dict, now: datetime, horizon_days: int = 366) -> datetime | None:
     """The soonest fire-time at or after `now`, or None within the horizon."""
     now = _utc(now)
