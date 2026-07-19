@@ -764,6 +764,40 @@ def _alert_text(e, scope, role_id, when, dt, is_kvk):
     return f"<@&{role_id}> **{e['name']}** ({scope_label(scope)}) {when} — {ts_both(dt)}"
 
 
+# ── long-text ephemeral sender ───────────────────────────────────────────────
+#   Plain message content caps at 2000 chars; an embed description allows 4096.
+#   Send the text as embed(s), splitting on blank lines if it ever exceeds 4096
+#   so the changelog/how-to can keep growing without hitting a hard limit.
+_EMBED_LIMIT = 4096
+
+
+def _chunk(text: str, limit: int = _EMBED_LIMIT) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    chunks, cur = [], ""
+    for para in text.split("\n\n"):
+        piece = (cur + "\n\n" + para) if cur else para
+        if len(piece) <= limit:
+            cur = piece
+        else:
+            if cur:
+                chunks.append(cur)
+            # a single paragraph longer than the limit: hard-split it
+            while len(para) > limit:
+                chunks.append(para[:limit])
+                para = para[limit:]
+            cur = para
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+async def _send_long_ephemeral(interaction: discord.Interaction, text: str):
+    parts = _chunk(text)
+    embeds = [discord.Embed(description=p) for p in parts]
+    await interaction.response.send_message(embeds=embeds, ephemeral=True)
+
+
 # ── "My Alliance Events" button (persistent) ─────────────────────────────────
 class BoardView(discord.ui.View):
     """Attached to the public board. The board itself shows only server-wide
@@ -808,13 +842,13 @@ class BoardView(discord.ui.View):
                        style=discord.ButtonStyle.secondary,
                        custom_id="board:changelog")
     async def changelog(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(docs.CHANGELOG, ephemeral=True)
+        await _send_long_ephemeral(interaction, docs.CHANGELOG)
 
     @discord.ui.button(label="How to use", emoji="❓",
                        style=discord.ButtonStyle.secondary,
                        custom_id="board:howto")
     async def howto(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(docs.HOWTO, ephemeral=True)
+        await _send_long_ephemeral(interaction, docs.HOWTO)
 
 
 def _tbd_series_on(evs: list[dict], day_start: datetime) -> list[dict]:
