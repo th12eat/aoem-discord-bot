@@ -8,10 +8,17 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.5.0 — Richer KvK alerts + no duplicate popups**
+• KvK stage alerts now spell out that day's **exact point-scoring** and a
+  **prep-ahead** note for the next stage (e.g. Forging Gear: craft gear, kill
+  tribes, pre-gather RSS for Enhancing Buildings, and sign up for Chief Priest).
+• Board buttons (Changelog / How to use / My Alliance Events) no longer stack:
+  pressing one again **replaces** your previous popup instead of adding another.
 
 **v1.4.0 — Personal lists + completed-event cleanup**
 • `/event_list`, `/next`, `/today`, `/week` are now **personal** — they show only

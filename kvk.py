@@ -18,15 +18,62 @@ from datetime import datetime, timedelta, timezone
 KVK_DEFS = {
     "TME": {
         "name": "The Mightiest Empire",
+        # Each prep sub-stage carries the exact point-scoring methods for THAT day
+        # (`scoring`) and what to do today to be ready for the NEXT stage (`prep`,
+        # which may reference `{nextDate}` — the coming stage's date). `king` notes
+        # the King's Rights buff that turns on that day. Kept in sync with the TME
+        # dashboard's day-by-day descriptions.
         "stages": [
             {"key": "mm", "title": "Matchmaking", "days": 2,
-             "summary": "Find a match for TME (wait)", "actionable": "Prepare for Prep Stage 1"},
+             "summary": "Find a match for TME (wait — no scoring yet)",
+             "actionable": "Prep for Stage 1",
+             "prep": "Farm Iron Meteorite and save Stamina for Stage 1 (Forging Gear) on {nextDate}"},
             {"key": "prep", "title": "Preparation", "group": True, "subs": [
-                {"key": "forge",  "title": "Forging Gear",           "days": 1, "summary": "Forge Gear, Gather"},
-                {"key": "bldg",   "title": "Enhancing Buildings",    "days": 1, "summary": "Use building speed-ups to advance buildings"},
-                {"key": "tech",   "title": "Enhancing Technologies", "days": 1, "summary": "Use technology speed-ups to advance technology"},
-                {"key": "train",  "title": "Unit Training",          "days": 1, "summary": "Use training speed-ups to make more units"},
-                {"key": "boost",  "title": "Power Boost",            "days": 2, "summary": "Everything from the previous days"},
+                {"key": "forge",  "title": "Forging Gear", "days": 1,
+                 "summary": "Craft gear + kill tribes; pre-gather for tomorrow",
+                 "scoring": [
+                    "Craft gear — rare +10,000 · epic +30,000 · legendary +200,000 (per piece)",
+                    "Kill tribes — Lv.1-4 +4,000 → Lv.25-28 +20,800 → Lv.29-30 +24,000 (per kill)",
+                 ],
+                 "prep": "Pre-gather RSS for Stage 2 (every 100 RSS gathered = +10) and sign up for Chief Priest (+10% Building Speed) slots for Enhancing Buildings on {nextDate}"},
+                {"key": "bldg",   "title": "Enhancing Buildings", "days": 1,
+                 "summary": "Burn building speed-ups + gather",
+                 "king": "King's Rights — Building buff active from 04:00 UTC",
+                 "scoring": [
+                    "Consume 1h of building speed-ups → +18,000",
+                    "Increase building power by 1 → +30",
+                    "Gather 100 resources (except armories) → +10",
+                 ],
+                 "prep": "Sign up for Court Sage (Research) slots for Enhancing Technologies on {nextDate}"},
+                {"key": "tech",   "title": "Enhancing Technologies", "days": 1,
+                 "summary": "Burn research speed-ups; run Starfall Vein",
+                 "king": "King's Rights — Research buff active from 04:00 UTC",
+                 "scoring": [
+                    "Participate in Starfall Vein 1 time → +3,000,000",
+                    "Consume 1h of research speed-ups → +18,000",
+                    "Increase technology power by 1 → +60",
+                 ],
+                 "prep": "Sign up for Tactical Master (Unit Training) slots for Unit Training on {nextDate}"},
+                {"key": "train",  "title": "Unit Training", "days": 1,
+                 "summary": "Train units + merchant ship trade",
+                 "king": "King's Rights — Unit Training buff active from 04:00 UTC",
+                 "scoring": [
+                    "Initiate 1 legendary merchant ship trade → +1,000,000",
+                    "Train units — Lv.1 +30 · Lv.2 +50 · Lv.3 +70 · Lv.4 +100 · Lv.5 +160 · Lv.6 +280",
+                 ],
+                 "prep": "Farm RSS and/or Iron Meteorite. Optionally sign up for Chief Priest, Court Sage, or Tactical Master for Power Boost on {nextDate}"},
+                {"key": "boost",  "title": "Power Boost", "days": 2,
+                 "summary": "Catch-all — most prior methods score again",
+                 "king": "King's Rights — Gathering buff active from 04:00 UTC",
+                 "scoring": [
+                    "Legendary merchant ship trade → +1,000,000",
+                    "Craft gear — rare +10,000 · epic +30,000 · legendary +200,000",
+                    "Kill tribes — Lv.1-4 +4,000 → Lv.29-30 +24,000",
+                    "Gather 100 resources (except armories) → +10",
+                    "Building power +1 → +30 · technology power +1 → +60",
+                    "Train/promote units, power +1 → +30",
+                 ],
+                 "actionable": "Invasion is next — position your marches for the fight"},
             ]},
             {"key": "inv", "title": "Invasion", "days": 1,
              "summary": "Attack or Defend the Imperial City", "actionable": "Fight at the invasion time"},

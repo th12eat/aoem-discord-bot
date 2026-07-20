@@ -763,18 +763,32 @@ async def scheduler_tick():
 
 
 def _alert_text(e, scope, role_id, when, dt, is_kvk):
-    """Compose the alert message. KvK alerts name the current stage + its end."""
+    """Compose the alert message. KvK stage alerts lead with the legible per-stage
+    label and spell out that day's exact point-scoring + what to prep for next."""
     if is_kvk:
         short = e["schedule"]["short"]
         kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
-        stage = next((s for s in kvk.compute_stages(short, kstart)
-                      if s["start"] == dt), None)
-        if stage:
+        stages = kvk.compute_stages(short, kstart)
+        idx = next((i for i, s in enumerate(stages) if s["start"] == dt), None)
+        if idx is not None:
+            stage = stages[idx]
+            nxt = stages[idx + 1] if idx + 1 < len(stages) else None
             parent = f" · {stage['parent']}" if stage.get("parent") else ""
-            act = f"\n▸ {stage['actionable']}" if stage.get("actionable") else ""
-            # lead with the legible per-stage label, e.g. "TME: Forging Gear"
-            return (f"<@&{role_id}> **{short}: {stage['title']}**{parent} — {e['name']} stage starts {ts_both(dt)}\n"
-                    f"_{stage.get('summary','')}_ · ends {ts(stage['end'], 'F')}{act}")
+            lines = [f"<@&{role_id}> **{short}: {stage['title']}**{parent} — {e['name']} stage starts {ts_both(dt)}",
+                     f"_{stage.get('summary','')}_ · ends {ts(stage['end'], 'F')}"]
+            if stage.get("king"):
+                lines.append(f"👑 {stage['king']}")
+            # exact point scoring for the day
+            if stage.get("scoring"):
+                lines.append("\n**How to score today:**")
+                lines += [f"• {m}" for m in stage["scoring"]]
+            # actionable + prep-ahead for the coming stage (fills {nextDate})
+            if stage.get("actionable"):
+                lines.append(f"\n▸ {stage['actionable']}")
+            if stage.get("prep"):
+                next_date = ts(nxt["start"], "D") if nxt else "the next stage"
+                lines.append(f"\n↪ **Prep ahead:** {stage['prep'].replace('{nextDate}', next_date)}")
+            return "\n".join(lines)
     return f"<@&{role_id}> **{e['name']}** ({scope_label(scope)}) {when} — {ts_both(dt)}"
 
 
@@ -806,10 +820,39 @@ def _chunk(text: str, limit: int = _EMBED_LIMIT) -> list[str]:
     return chunks
 
 
-async def _send_long_ephemeral(interaction: discord.Interaction, text: str):
+# remembers each user's last ephemeral response per button "kind" so a repeat
+# press deletes the prior one instead of stacking duplicates. Keyed by
+# (user_id, kind) → the Interaction whose original response we can delete.
+_last_ephemeral: dict[tuple[int, str], discord.Interaction] = {}
+
+
+async def _send_long_ephemeral(interaction: discord.Interaction, text: str, kind: str | None = None):
+    # if this user already has one of these open, delete it first (no duplicates)
+    if kind is not None:
+        prev = _last_ephemeral.pop((interaction.user.id, kind), None)
+        if prev is not None:
+            try:
+                await prev.delete_original_response()
+            except discord.DiscordException:
+                pass  # already dismissed / expired — nothing to clean up
     parts = _chunk(text)
     embeds = [discord.Embed(description=p) for p in parts]
     await interaction.response.send_message(embeds=embeds, ephemeral=True)
+    if kind is not None:
+        _last_ephemeral[(interaction.user.id, kind)] = interaction
+
+
+async def _send_ephemeral(interaction: discord.Interaction, content: str, kind: str):
+    """Plain-text ephemeral (keeps <t:> timestamps live) with the same no-duplicate
+    behaviour: a repeat press of the same button deletes the user's prior one."""
+    prev = _last_ephemeral.pop((interaction.user.id, kind), None)
+    if prev is not None:
+        try:
+            await prev.delete_original_response()
+        except discord.DiscordException:
+            pass
+    await interaction.response.send_message(content, ephemeral=True)
+    _last_ephemeral[(interaction.user.id, kind)] = interaction
 
 
 # ── "My Alliance Events" button (persistent) ─────────────────────────────────
@@ -827,9 +870,9 @@ class BoardView(discord.ui.View):
         from helpers import member_alliances, r4_alliances
         keys = member_alliances(interaction.user) | r4_alliances(interaction.user)
         if not keys:
-            return await interaction.response.send_message(
+            return await _send_ephemeral(interaction,
                 "You're not in an alliance I have events for. Server-wide events are on the board above.",
-                ephemeral=True)
+                kind="my_events")
         now = datetime.now(timezone.utc)
         d0s, d0e = sched.utc_day_bounds(now)
         d1s, d1e = sched.utc_day_bounds(now + timedelta(days=1))
@@ -846,23 +889,23 @@ class BoardView(discord.ui.View):
             return f"__{title}__\n{rows}"
 
         names = ", ".join(sorted(keys))
-        await interaction.response.send_message(
+        await _send_ephemeral(interaction,
             f"🔎 **Your alliance events** ({names})\n\n"
             f"{block('Today (UTC)', d0s, d0e)}\n\n"
             f"{block('Tomorrow (UTC)', d1s, d1e)}",
-            ephemeral=True)
+            kind="my_events")
 
     @discord.ui.button(label="Changelog", emoji="📜",
                        style=discord.ButtonStyle.secondary,
                        custom_id="board:changelog")
     async def changelog(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _send_long_ephemeral(interaction, docs.CHANGELOG)
+        await _send_long_ephemeral(interaction, docs.CHANGELOG, kind="changelog")
 
     @discord.ui.button(label="How to use", emoji="❓",
                        style=discord.ButtonStyle.secondary,
                        custom_id="board:howto")
     async def howto(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _send_long_ephemeral(interaction, docs.HOWTO)
+        await _send_long_ephemeral(interaction, docs.HOWTO, kind="howto")
 
 
 def _tbd_series_on(evs: list[dict], day_start: datetime) -> list[dict]:
