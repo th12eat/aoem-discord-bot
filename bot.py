@@ -468,6 +468,20 @@ async def series_setup(interaction: discord.Interaction):
     await refresh_board(interaction.guild)
 
 
+# ── display label for a specific occurrence ──────────────────────────────────
+def occ_name(e: dict, dt: datetime) -> str:
+    """Legible name for an event AT a specific fire-time. KvK occurrences name the
+    stage that starts then (e.g. 'TME: Forging Gear'); everything else is its name."""
+    s = e.get("schedule", {})
+    if s.get("type") == "kvk":
+        try:
+            kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
+            return kvk.occurrence_label(s["short"], kstart, dt)
+        except (KeyError, ValueError):
+            pass
+    return e["name"]
+
+
 # ── /event_remove ────────────────────────────────────────────────────────────
 def _short_schedule(schedule: dict) -> str:
     """Compact schedule for an autocomplete label (no dynamic timestamps there)."""
@@ -674,7 +688,7 @@ async def _list_window(interaction, start, end, label):
     pairs = sched.occurrences_for_events(evs, start, end)
     if not pairs:
         return await interaction.response.send_message(f"No events {label.lower()}.", ephemeral=True)
-    lines = [f"• {ts(dt, 't')} — [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}**"
+    lines = [f"• {ts(dt, 't')} — [{scope_label(e.get('scope', SERVER_SCOPE))}] **{occ_name(e, dt)}**"
              for dt, e in pairs]
     await interaction.response.send_message(f"**{label} (UTC day)**\n" + "\n".join(lines), ephemeral=True)
 
@@ -756,10 +770,10 @@ def _alert_text(e, scope, role_id, when, dt, is_kvk):
         stage = next((s for s in kvk.compute_stages(short, kstart)
                       if s["start"] == dt), None)
         if stage:
-            title = stage["title"]
             parent = f" · {stage['parent']}" if stage.get("parent") else ""
             act = f"\n▸ {stage['actionable']}" if stage.get("actionable") else ""
-            return (f"<@&{role_id}> **{e['name']}** — stage **{title}**{parent} starts {ts_both(dt)}\n"
+            # lead with the legible per-stage label, e.g. "TME: Forging Gear"
+            return (f"<@&{role_id}> **{short}: {stage['title']}**{parent} — {e['name']} stage starts {ts_both(dt)}\n"
                     f"_{stage.get('summary','')}_ · ends {ts(stage['end'], 'F')}{act}")
     return f"<@&{role_id}> **{e['name']}** ({scope_label(scope)}) {when} — {ts_both(dt)}"
 
@@ -827,7 +841,7 @@ class BoardView(discord.ui.View):
             if not pairs:
                 return f"__{title}__\n*(none)*"
             rows = "\n".join(
-                f"• {ts(dt,'t')} — [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}** ({ts(dt,'R')})"
+                f"• {ts(dt,'t')} — [{scope_label(e.get('scope', SERVER_SCOPE))}] **{occ_name(e, dt)}** ({ts(dt,'R')})"
                 for dt, e in pairs)
             return f"__{title}__\n{rows}"
 
@@ -883,7 +897,7 @@ async def refresh_board(guild: discord.Guild):
 
     def block(title, start, end):
         pairs = sched.occurrences_for_events(evs, start, end)
-        rows = [f"• {ts(dt, 't')} — **{e['name']}** ({ts(dt,'R')})" for dt, e in pairs]
+        rows = [f"• {ts(dt, 't')} — **{occ_name(e, dt)}** ({ts(dt,'R')})" for dt, e in pairs]
         # TBD-time series land on their day but have no fire-times: show them as a
         # "time TBD" note so people know they're happening (they just aren't pinged).
         rows += [f"• ⏳ **{e['name']}** — _time TBD (set it to enable alerts)_"

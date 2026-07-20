@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 # with `subs` (each sub is a leaf). Leaves are what get alerts + scheduled.
 KVK_DEFS = {
     "TME": {
-        "name": "The Mightiest Emperor",
+        "name": "The Mightiest Empire",
         "stages": [
             {"key": "mm", "title": "Matchmaking", "days": 2,
              "summary": "Find a match for TME (wait)", "actionable": "Prepare for Prep Stage 1"},
@@ -107,6 +107,15 @@ def compute_stages(short: str, start: datetime) -> list[dict]:
 
 def total_days(short: str) -> int:
     return sum(l["days"] for l in _leaves(KVK_DEFS[short]))
+
+
+def occurrence_label(short: str, start: datetime, dt: datetime) -> str:
+    """Legible per-stage label for a KvK occurrence, e.g. 'TME: Forging Gear'.
+    Falls back to the KvK's full name if `dt` isn't a known stage start."""
+    stage = next((s for s in compute_stages(short, start) if s["start"] == dt), None)
+    if stage:
+        return f"{short}: {stage['title']}"
+    return KVK_DEFS.get(short, {}).get("name", short)
 
 
 def stage_active_on(short: str, start: datetime, target, stage_keys=None) -> bool:
