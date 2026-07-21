@@ -32,7 +32,7 @@ _Broad, user-visible changes per release._
 **v1.3.0 — Recurring weekly series**
 • `/series_setup` seeds the rolling weekly server events: **Imperial Showdown**
   (Sundays, skips TME weeks), **City Clash** (Saturdays), **World Campaign**
-  (Wed & Sun, 4h), **Starfall Vein** (Wednesdays, fixed 02/05/11/19 UTC).
+  (Wed & Sun, 4h), **Starfall Vein** (Wednesdays, fixed 02/05/12/20 UTC).
 • Only the **next** occurrence is ever live — it rolls forward automatically once
   its day ends, so the dropdowns/log never fill with future dates.
 • Series show on the board even before a time is set, but **don't ping until an

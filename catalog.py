@@ -30,8 +30,9 @@ SERIES = {
     "World Campaign":    {"days": [2, 6], "fixed": False, "duration": 240,
                           "note": "Every Wednesday & Sunday (4h)"},
     "Starfall Vein":     {"days": [2], "fixed": True,
-                          "fixedTimes": ["02:00", "05:00", "11:00", "19:00"],
-                          "note": "Every Wednesday · fixed times 02/05/11/19 UTC"},
+                          "fixedTimes": ["02:00", "05:00", "12:00", "20:00"],
+                          "duration": 35,
+                          "note": "Every Wednesday · fixed times 02/05/12/20 UTC (35 min each)"},
 }
 
 # Alliance leadership actionable events (specific date/time).

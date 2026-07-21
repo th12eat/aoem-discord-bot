@@ -54,7 +54,7 @@ and event log never fill with future dates.
 | Imperial Showdown | Sundays, **except TME weeks** (detected from the KvK log) | set per week |
 | City Clash | Saturdays | set per week |
 | World Campaign | Wednesdays & Sundays (4h) | set per week |
-| Starfall Vein | Wednesdays | **fixed** 02:00 / 05:00 / 11:00 / 19:00 UTC |
+| Starfall Vein | Wednesdays | **fixed** 02:00 / 05:00 / 12:00 / 20:00 UTC (35 min each) |
 
 A series shows on the board even before a time is set, but **won't ping until an
 R4 sets the time** via `/event_edit` (fixed-time series like Starfall Vein ping
