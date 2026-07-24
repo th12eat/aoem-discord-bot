@@ -20,10 +20,11 @@ _Broad, user-visible changes per release._
   each of the six slots (Sat/Sun × 01:00/11:00/19:00 UTC); the bot pings that slot's
   role at its time with the weekend's event. `/legion_status` shows the setup.
 • **Legion roster management:** `/legion_fill` adds a pasted list of members to a
-  slot role (and removes them from any other slot — one slot per person). All slot
-  roles are **auto-emptied Monday 00:00 UTC** so nobody gets spammed for an event
-  they're not attending; admins refill Thu/Fri. (Needs **Manage Roles** + the bot's
-  role above the slot roles.)
+  slot role (and removes them from any other slot — one slot per person);
+  `/legion_list` shows a slot's members, filterable by alliance. All slot roles are
+  **auto-emptied Monday 00:00 UTC** so nobody gets spammed for an event they're not
+  attending; admins refill Thu/Fri. Slot roles are pinged **1h before and at start**
+  (40-min window). (Needs **Manage Roles** + the bot's role above the slot roles.)
 • **City Clash** alerts now include the planned **city → alliance takeover list**.
 • **Fixed:** KvK stage instructions (e.g. Power Boost) were vanishing at the
   00:00 UTC board wipe — the current stage is now re-posted after the daily clear.
@@ -98,8 +99,9 @@ Pings @eRa8; any alliance's R4 may create/edit these.
 • `/legion_status` — show the current seed + which slot roles are set.
 • `/legion_fill` — paste @mentions/IDs to add them to a slot (moves them off any
   other slot; one slot per person). Roles auto-empty **Monday 00:00 UTC**; refill Thu/Fri.
-The bot pings each slot's role at its UTC time. Needs **Manage Roles** + the bot's
-role placed above the slot roles.
+• `/legion_list` — list slot members; filter by `alliance` (e.g. WC1) and/or `slot`.
+The bot pings each slot's role **1h before and at start** (40-min window). Needs
+**Manage Roles** + the bot's role placed above the slot roles.
 
 **🏰 Alliance events — _that alliance's R4 only_ (or Manage Server)**
 Pings that alliance's member role; only its R4 may create/edit.

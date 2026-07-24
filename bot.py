@@ -17,6 +17,7 @@ Admin:
                       TBD = no ping until set; Imperial Showdown skips TME weeks)
   /legion_slot        bind a ping role to a legion time-slot (Sat/Sun × 01/11/19)
   /legion_fill        add pasted members to a slot role (one slot per user)
+  /legion_list        list slot members (filter by alliance and/or slot)
   /legion_seed        seed WC↔BoD alternation (declare this weekend's event)
   /legion_unseed      stop the alternation (scheduling exceptions)
   /legion_status      show seed + slot roles
@@ -35,9 +36,10 @@ Background:
     My Alliance Events, Changelog, How to use.
   - daily clear: at 00:00 UTC the board channel is purged of everything except
     the board message, then the board is re-posted (needs Manage Messages).
-  - legion pings: each configured slot role is pinged at its Sat/Sun UTC time
-    with the weekend's event; all slot roles are emptied Mon 00:00 UTC (needs
-    Manage Roles + the bot's role above the slot roles).
+  - legion pings: each configured slot role is pinged T-1h + at its Sat/Sun UTC
+    start (40-min window, same self-cleaning lifecycle as normal events); all
+    slot roles are emptied Mon 00:00 UTC (needs Manage Roles + the bot's role
+    above the slot roles).
 
 All times stored + entered in UTC; shown via Discord dynamic timestamps.
 """
@@ -429,6 +431,46 @@ async def legion_fill(interaction: discord.Interaction, slot: app_commands.Choic
     if failed:  parts.append(f"⚠️ Failed (check bot's Manage Roles + role order): {', '.join(failed)}")
     if notfound:parts.append(f"⚠️ Not in server: {', '.join(str(u) for u in notfound)}")
     await interaction.followup.send("\n".join(parts), ephemeral=True)
+
+
+@bot.tree.command(name="legion_list", description="List legion slot members (optionally filtered by alliance).")
+@app_commands.describe(slot="Limit to one slot (default: all slots)",
+                       alliance="Limit to members of one alliance (default: everyone)")
+@app_commands.choices(slot=_LEGION_SLOT_CHOICES, alliance=_ALLIANCE_CHOICES)
+async def legion_list(interaction: discord.Interaction,
+                      slot: app_commands.Choice[str] | None = None,
+                      alliance: app_commands.Choice[str] | None = None):
+    slots_cfg = store.legion_config(interaction.guild_id).get("slots", {})
+    if not slots_cfg:
+        return await interaction.response.send_message(
+            "No legion slot roles configured yet — set them with `/legion_slot`.", ephemeral=True)
+    # optional alliance member-role filter
+    alli_role = None
+    if alliance:
+        rid = store.alliance_roles(interaction.guild_id, alliance.value).get("member_role_id")
+        alli_role = interaction.guild.get_role(rid) if rid else None
+        if alli_role is None:
+            return await interaction.response.send_message(
+                f"⚠️ {alliance.value} has no member role registered (`/config_alliance`).", ephemeral=True)
+
+    want = [slot.value] if slot else catalog.LEGION_SLOTS
+    slot_label = {c.value: c.name for c in _LEGION_SLOT_CHOICES}
+    blocks = []
+    for s in want:
+        rid = slots_cfg.get(s)
+        role = interaction.guild.get_role(rid) if rid else None
+        if role is None:
+            continue
+        members = role.members
+        if alli_role is not None:
+            members = [m for m in members if alli_role in m.roles]
+        names = sorted(m.display_name for m in members)
+        head = f"__{slot_label.get(s, s)}__ ({len(names)})"
+        blocks.append(head + ("\n" + "\n".join(f"• {n}" for n in names) if names else "\n*(none)*"))
+    who = f" · {alliance.value} only" if alliance else ""
+    title = f"⚔️ **Legion members{who}**"
+    body = "\n\n".join(blocks) if blocks else "*(no matching slots configured)*"
+    await _send_long_ephemeral(interaction, f"{title}\n\n{body}", kind="legion_list")
 
 
 @bot.tree.command(name="legion_seed", description="Seed the WC↔BoD alternation (declare this weekend's event).")
@@ -863,30 +905,49 @@ async def scheduler_tick():
                             _alert_now[okey] = (channel.id, msg.id, expire)
 
         # ── legion slot pings (server-wide, WC↔BoD alternating) ──
+        #   Same lifecycle as normal events: T-1h + at-start; the 1h alert is
+        #   deleted when start fires, and the start alert self-deletes after the
+        #   40-min legion window.
         leg = store.legion_config(guild.id)
         seed = leg.get("seed"); slots = leg.get("slots", {})
         if seed:
             for slot, (wd, hhmm) in legion.SLOT_TIMES.items():
-                h, m = (int(x) for x in hhmm.split(":"))
-                if not (now.weekday() == wd and now.hour == h and now.minute == m):
-                    continue
                 role_id = slots.get(slot)
                 if not role_id:
                     continue
-                ev = legion.event_for_weekend(seed, legion.weekend_saturday(now.date()))
-                if not ev:
-                    continue
-                fkey = f"legion|{slot}|{now.date().isoformat()}"
-                if fkey in _fired:
-                    continue
-                _fired.add(fkey)
-                name = catalog.LEGION_EVENTS.get(ev, ev)
-                try:
-                    await channel.send(
-                        f"<@&{role_id}> **{name} ({ev})** — legion window starts now "
-                        f"({hhmm} UTC · {slot}). Assemble your legion!")
-                except discord.DiscordException as ex:
-                    log.error("legion ping failed: %s", ex)
+                h, m = (int(x) for x in hhmm.split(":"))
+                for offset, when in ((60, "in 1 hour"), (0, "starting now")):
+                    tgt = now + timedelta(minutes=offset)
+                    if not (tgt.weekday() == wd and tgt.hour == h and tgt.minute == m):
+                        continue
+                    ev = legion.event_for_weekend(seed, legion.weekend_saturday(tgt.date()))
+                    if not ev:
+                        continue
+                    dt = tgt  # actual slot start time
+                    okey = f"legion|{slot}|{dt.date().isoformat()}"
+                    fkey = f"{okey}|{offset}"
+                    if fkey in _fired:
+                        continue
+                    _fired.add(fkey)
+                    name = catalog.LEGION_EVENTS.get(ev, ev)
+                    text = (f"<@&{role_id}> **{name} ({ev})** — legion {when} "
+                            f"({hhmm} UTC). Assemble your legion!")
+                    try:
+                        msg = await channel.send(text)
+                    except discord.DiscordException as ex:
+                        log.error("legion ping failed: %s", ex)
+                        continue
+                    if offset == 60:
+                        _alert_1h[okey] = msg.id
+                    else:
+                        old = _alert_1h.pop(okey, None)
+                        if old:
+                            try:
+                                mo = await channel.fetch_message(old)
+                                await mo.delete()
+                            except discord.DiscordException:
+                                pass
+                        _alert_now[okey] = (channel.id, msg.id, dt + timedelta(minutes=40))
     if len(_fired) > 5000:
         _fired.clear()
 
