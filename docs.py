@@ -8,10 +8,20 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.6.0 — Legions, City Clash targets, KvK-stage fix**
+• **Legions are back, server-wide:** `/legion_seed` declares this weekend's event
+  and the bot alternates **Wonder Contest ↔ Battle of Dawn** every weekend forever
+  (`/legion_unseed` for the rare exceptions). `/legion_slot` binds a ping role to
+  each of the six slots (Sat/Sun × 01:00/11:00/19:00 UTC); the bot pings that slot's
+  role at its time with the weekend's event. `/legion_status` shows the setup.
+• **City Clash** alerts now include the planned **city → alliance takeover list**.
+• **Fixed:** KvK stage instructions (e.g. Power Boost) were vanishing at the
+  00:00 UTC board wipe — the current stage is now re-posted after the daily clear.
 
 **v1.5.0 — Richer KvK alerts + no duplicate popups**
 • KvK stage alerts now spell out that day's **exact point-scoring** and a
@@ -76,11 +86,17 @@ Pings @eRa8; any alliance's R4 may create/edit these.
 • `/series_setup` — seed the rolling weekly events (Imperial Showdown, City Clash,
   World Campaign, Starfall Vein). Run once; they auto-advance each week. *[Server]*
 
+**⚔️ Legions (Wonder Contest / Battle of Dawn) — _any R4_, server-wide**
+• `/legion_slot` — bind a ping role to a time-slot (Sat/Sun × 01:00/11:00/19:00 UTC).
+• `/legion_seed` — declare **this weekend's** event; it alternates WC↔BoD every weekend.
+• `/legion_unseed` — stop pings (for the ~quarterly schedule exceptions).
+• `/legion_status` — show the current seed + which slot roles are set.
+Admins fill each slot's role ahead of time; the bot pings it at the slot's UTC time.
+
 **🏰 Alliance events — _that alliance's R4 only_ (or Manage Server)**
 Pings that alliance's member role; only its R4 may create/edit.
 • `/alliance_event_add` — leadership actionable at a specific date/time. *[Alliance]*
 • `/event_add` (scope: your alliance) — recurring/one-time alliance event. *[Alliance]*
-• `/legion_add` — Wonder Contest / Battle of Dawn (every other week). *[Alliance]*
 
 **✏️ Manage — _R4 of the event's scope_ (or Manage Server)**
 • `/event_edit` — change an event's name, time, duration, or scope. *[scope of the event]*

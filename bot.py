@@ -12,10 +12,13 @@ Admin:
   /event_add          generic event (scope, once/daily/weekly/every-other, UTC, duration)
   /server_event_add   server "opening soon" event (date range, pings everyone)
   /alliance_event_add alliance leadership event (specific date/time)
-  /legion_add         WC/BoD legion event (every-other-week, Sat/Sun, fixed times)
   /kvk_add            multi-day KvK; stages auto-mapped from a start date
   /series_setup       seed rolling weekly server events (only next occ live; time
                       TBD = no ping until set; Imperial Showdown skips TME weeks)
+  /legion_slot        bind a ping role to a legion time-slot (Sat/Sun × 01/11/19)
+  /legion_seed        seed WC↔BoD alternation (declare this weekend's event)
+  /legion_unseed      stop the alternation (scheduling exceptions)
+  /legion_status      show seed + slot roles
   /event_edit         edit name / time / duration / scope
   /event_remove       delete an event
 Member (ephemeral, scoped to what the viewer may see):
@@ -50,6 +53,7 @@ import scheduling as sched
 import kvk
 import catalog
 import series as series_mod
+import legion
 import docs
 from alliances import ALLIANCES, SERVER_SCOPE, SCOPES, scope_label, scope_display
 from helpers import (ts, ts_both, describe_schedule, can_admin_scope,
@@ -346,35 +350,77 @@ async def alliance_event_add(interaction: discord.Interaction, alliance: app_com
     await _finalize_add(interaction, ev, f"{describe_schedule(schedule)} · {dur}min")
 
 
-# ── /legion_add — WC/BoD, every other week, Sat/Sun, fixed times ─────────────
-_LEGION_CHOICES = [app_commands.Choice(name=f"{v} ({k})", value=k) for k, v in catalog.LEGION_EVENTS.items()]
-_LEGION_DAY_CHOICES = [app_commands.Choice(name="Saturday", value="5"), app_commands.Choice(name="Sunday", value="6")]
-_LEGION_TIME_CHOICES = [app_commands.Choice(name=f"{t} UTC", value=t) for t in catalog.LEGION_TIMES]
+# ── legion (server-wide): WC↔BoD alternating, 6 slot roles ───────────────────
+_LEGION_SLOT_CHOICES = [
+    app_commands.Choice(name="Saturday 01:00 UTC", value="sat_0100"),
+    app_commands.Choice(name="Saturday 11:00 UTC", value="sat_1100"),
+    app_commands.Choice(name="Saturday 19:00 UTC", value="sat_1900"),
+    app_commands.Choice(name="Sunday 01:00 UTC",   value="sun_0100"),
+    app_commands.Choice(name="Sunday 11:00 UTC",   value="sun_1100"),
+    app_commands.Choice(name="Sunday 19:00 UTC",   value="sun_1900"),
+]
+_LEGION_EVENT_CHOICES = [app_commands.Choice(name="Wonder Contest (WC)", value="WC"),
+                         app_commands.Choice(name="Battle of Dawn (BoD)", value="BoD")]
 
-@bot.tree.command(name="legion_add", description="Add a legion event (WC/BoD, every other week).")
-@app_commands.describe(alliance="Which alliance", event="Wonder Contest or Battle of Dawn",
-                       day="Saturday or Sunday", time="UTC time",
-                       anchor_date="First occurrence date (UTC YYYY-MM-DD, that Sat/Sun)")
-@app_commands.choices(alliance=_ALLIANCE_CHOICES, event=_LEGION_CHOICES,
-                      day=_LEGION_DAY_CHOICES, time=_LEGION_TIME_CHOICES)
-async def legion_add(interaction: discord.Interaction, alliance: app_commands.Choice[str],
-                     event: app_commands.Choice[str], day: app_commands.Choice[str],
-                     time: app_commands.Choice[str], anchor_date: str):
-    if not can_admin_scope(interaction.user, alliance.value):
-        return await interaction.response.send_message(
-            f"Only {alliance.value} R4 can add {alliance.value} legion events.", ephemeral=True)
-    wd = int(day.value)
-    try:
-        adt = datetime.fromisoformat(f"{anchor_date}T00:00")
-    except ValueError:
-        return await interaction.response.send_message("⚠️ `anchor_date` must be `YYYY-MM-DD`.", ephemeral=True)
-    if adt.weekday() != wd:
-        return await interaction.response.send_message(
-            f"⚠️ {anchor_date} isn't a {day.name}. Pick the date of the first {day.name}.", ephemeral=True)
-    name = catalog.LEGION_EVENTS[event.value]
-    schedule = {"type": "everyotherweek", "anchor": anchor_date, "days": [wd], "times": [time.value]}
-    ev = _mk_event(interaction, name, alliance.value, schedule, duration=60, legion=True)
-    await _finalize_add(interaction, ev, f"{describe_schedule(schedule)} · pings {alliance.value} (Legion role TBD)")
+
+@bot.tree.command(name="legion_slot", description="Bind a ping role to a legion time-slot (Sat/Sun × 01/11/19 UTC).")
+@app_commands.describe(slot="Which weekend time-slot", role="Role pinged at that slot's time")
+@app_commands.choices(slot=_LEGION_SLOT_CHOICES)
+async def legion_slot(interaction: discord.Interaction, slot: app_commands.Choice[str], role: discord.Role):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can configure legion slots.", ephemeral=True)
+    store.set_legion_slot(interaction.guild_id, slot.value, role.id)
+    await interaction.response.send_message(
+        f"✅ Legion slot **{slot.name}** will ping {role.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="legion_seed", description="Seed the WC↔BoD alternation (declare this weekend's event).")
+@app_commands.describe(event="Which legion event runs THIS weekend (alternates every weekend after)")
+@app_commands.choices(event=_LEGION_EVENT_CHOICES)
+async def legion_seed(interaction: discord.Interaction, event: app_commands.Choice[str]):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can seed legions.", ephemeral=True)
+    sat = legion.weekend_saturday(datetime.now(timezone.utc).date())
+    store.set_legion_seed(interaction.guild_id, sat.isoformat(), event.value)
+    nxt_sat = sat + timedelta(days=7)
+    nxt = "BoD" if event.value == "WC" else "WC"
+    slots = store.legion_config(interaction.guild_id).get("slots", {})
+    filled = len(slots); missing = [s for s in catalog.LEGION_SLOTS if s not in slots]
+    msg = (f"✅ Legion seeded — **this weekend = {catalog.LEGION_EVENTS[event.value]} ({event.value})**, "
+           f"next weekend = {catalog.LEGION_EVENTS[nxt]} ({nxt}), alternating thereafter.\n"
+           f"Slot roles set: **{filled}/6**")
+    if missing:
+        msg += f" · not yet set: {', '.join(missing)} (use `/legion_slot`)"
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bot.tree.command(name="legion_unseed", description="Stop the legion alternation (for scheduling exceptions).")
+async def legion_unseed(interaction: discord.Interaction):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can unseed legions.", ephemeral=True)
+    had = store.clear_legion_seed(interaction.guild_id)
+    await interaction.response.send_message(
+        "🛑 Legion alternation stopped — no legion pings until re-seeded with `/legion_seed`."
+        if had else "There was no active legion seed.", ephemeral=True)
+
+
+@bot.tree.command(name="legion_status", description="Show the current legion seed + slot roles.")
+async def legion_status(interaction: discord.Interaction):
+    leg = store.legion_config(interaction.guild_id)
+    seed = leg.get("seed"); slots = leg.get("slots", {})
+    now = datetime.now(timezone.utc)
+    lines = []
+    if seed:
+        this_sat = legion.weekend_saturday(now.date())
+        ev = legion.event_for_weekend(seed, this_sat)
+        lines.append(f"**This weekend:** {catalog.LEGION_EVENTS.get(ev, ev)} ({ev}) · seeded {seed['anchor']}")
+    else:
+        lines.append("**Not seeded** — use `/legion_seed`.")
+    lines.append("**Slot roles:**")
+    for s in catalog.LEGION_SLOTS:
+        rid = slots.get(s)
+        lines.append(f"• {s}: " + (f"<@&{rid}>" if rid else "—"))
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
 # ── /kvk_add — multi-day, stages auto-derived from a start date ──────────────
@@ -758,8 +804,53 @@ async def scheduler_tick():
                         if not is_kvk:
                             expire = dt + timedelta(minutes=_event_duration_min(e))
                             _alert_now[okey] = (channel.id, msg.id, expire)
+
+        # ── legion slot pings (server-wide, WC↔BoD alternating) ──
+        leg = store.legion_config(guild.id)
+        seed = leg.get("seed"); slots = leg.get("slots", {})
+        if seed:
+            for slot, (wd, hhmm) in legion.SLOT_TIMES.items():
+                h, m = (int(x) for x in hhmm.split(":"))
+                if not (now.weekday() == wd and now.hour == h and now.minute == m):
+                    continue
+                role_id = slots.get(slot)
+                if not role_id:
+                    continue
+                ev = legion.event_for_weekend(seed, legion.weekend_saturday(now.date()))
+                if not ev:
+                    continue
+                fkey = f"legion|{slot}|{now.date().isoformat()}"
+                if fkey in _fired:
+                    continue
+                _fired.add(fkey)
+                name = catalog.LEGION_EVENTS.get(ev, ev)
+                try:
+                    await channel.send(
+                        f"<@&{role_id}> **{name} ({ev})** — legion window starts now "
+                        f"({hhmm} UTC · {slot}). Assemble your legion!")
+                except discord.DiscordException as ex:
+                    log.error("legion ping failed: %s", ex)
     if len(_fired) > 5000:
         _fired.clear()
+
+
+def _kvk_stage_body(e, short, stages, idx, header):
+    """Body text for a KvK stage (shared by the live alert + the daily re-post).
+    `header` is the first line (with or without a role ping)."""
+    stage = stages[idx]
+    nxt = stages[idx + 1] if idx + 1 < len(stages) else None
+    lines = [header, f"_{stage.get('summary','')}_ · ends {ts(stage['end'], 'F')}"]
+    if stage.get("king"):
+        lines.append(f"👑 {stage['king']}")
+    if stage.get("scoring"):
+        lines.append("\n**How to score today:**")
+        lines += [f"• {m}" for m in stage["scoring"]]
+    if stage.get("actionable"):
+        lines.append(f"\n▸ {stage['actionable']}")
+    if stage.get("prep"):
+        next_date = ts(nxt["start"], "D") if nxt else "the next stage"
+        lines.append(f"\n↪ **Prep ahead:** {stage['prep'].replace('{nextDate}', next_date)}")
+    return "\n".join(lines)
 
 
 def _alert_text(e, scope, role_id, when, dt, is_kvk):
@@ -772,24 +863,15 @@ def _alert_text(e, scope, role_id, when, dt, is_kvk):
         idx = next((i for i, s in enumerate(stages) if s["start"] == dt), None)
         if idx is not None:
             stage = stages[idx]
-            nxt = stages[idx + 1] if idx + 1 < len(stages) else None
             parent = f" · {stage['parent']}" if stage.get("parent") else ""
-            lines = [f"<@&{role_id}> **{short}: {stage['title']}**{parent} — {e['name']} stage starts {ts_both(dt)}",
-                     f"_{stage.get('summary','')}_ · ends {ts(stage['end'], 'F')}"]
-            if stage.get("king"):
-                lines.append(f"👑 {stage['king']}")
-            # exact point scoring for the day
-            if stage.get("scoring"):
-                lines.append("\n**How to score today:**")
-                lines += [f"• {m}" for m in stage["scoring"]]
-            # actionable + prep-ahead for the coming stage (fills {nextDate})
-            if stage.get("actionable"):
-                lines.append(f"\n▸ {stage['actionable']}")
-            if stage.get("prep"):
-                next_date = ts(nxt["start"], "D") if nxt else "the next stage"
-                lines.append(f"\n↪ **Prep ahead:** {stage['prep'].replace('{nextDate}', next_date)}")
-            return "\n".join(lines)
-    return f"<@&{role_id}> **{e['name']}** ({scope_label(scope)}) {when} — {ts_both(dt)}"
+            header = (f"<@&{role_id}> **{short}: {stage['title']}**{parent} — "
+                      f"{e['name']} stage starts {ts_both(dt)}")
+            return _kvk_stage_body(e, short, stages, idx, header)
+    text = f"<@&{role_id}> **{e['name']}** ({scope_label(scope)}) {when} — {ts_both(dt)}"
+    # City Clash: append the planned city → alliance takeover list
+    if e["name"] == "City Clash":
+        text += "\n\n**Target cities:**\n" + "\n".join(catalog.city_clash_lines())
+    return text
 
 
 # ── long-text ephemeral sender ───────────────────────────────────────────────
@@ -1013,6 +1095,43 @@ async def clear_board_channel(guild: discord.Guild):
             log.error("board channel clear failed: %s", ex2)
     # re-post/refresh the board so it (and its buttons) survive the wipe
     await refresh_board(guild)
+    # the wipe also removed any persistent KvK stage alerts — re-post the current
+    # stage's instructions (silently, no ping) so they survive the daily clear.
+    await repost_active_kvk_stages(guild)
+
+
+async def repost_active_kvk_stages(guild: discord.Guild):
+    """After the daily clear, re-post the currently-active stage of each running
+    KvK (no role ping) so its instructions persist across the wipe. This is why
+    stage instructions (e.g. Power Boost) were vanishing at UTC midnight."""
+    cfg = store.guild_config(guild.id)
+    chan_id = cfg.get("board_channel_id")
+    channel = guild.get_channel(chan_id) if chan_id else None
+    if channel is None:
+        return
+    now = datetime.now(timezone.utc)
+    for e in store.events_for_guild(guild.id):
+        s = e.get("schedule", {})
+        if s.get("type") != "kvk":
+            continue
+        try:
+            kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
+        except (KeyError, ValueError):
+            continue
+        stages = kvk.compute_stages(s["short"], kstart)
+        # current stage = last one that has started and hasn't ended
+        idx = next((i for i in range(len(stages) - 1, -1, -1)
+                    if stages[i]["start"] <= now < stages[i]["end"]), None)
+        if idx is None:
+            continue
+        stage = stages[idx]
+        parent = f" · {stage['parent']}" if stage.get("parent") else ""
+        header = f"📋 **{s['short']}: {stage['title']}**{parent} — {e['name']} · current stage"
+        text = _kvk_stage_body(e, s["short"], stages, idx, header)
+        try:
+            await channel.send(text)
+        except discord.DiscordException as ex:
+            log.error("kvk stage re-post failed: %s", ex)
 
 
 @tasks.loop(minutes=1)

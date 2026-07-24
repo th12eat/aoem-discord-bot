@@ -41,14 +41,42 @@ ALLIANCE_EVENTS = [
     "Marauder's", "Trojan Turmoil",
 ]
 
-# Weekly legion events — every other week, opposite each other.
+# City Clash — which alliance is expected to take which city (with its region).
+# Included in the City Clash event alert so members know the plan.
+CITY_CLASH_TARGETS = {
+    "WC1": [("City of Sapphire", "North Kingsland"),
+            ("City of Fiery Stallion", "Kyuno"),
+            ("City of Eagle", "Olympia")],
+    "REU": [("City of Black Reef", "West Kingsland"),
+            ("City of Jade Viper", "Neilos"),
+            ("City of Desert Camel", "Tinir")],
+    "MyT": [("City of White Pierce", "East Kingsland"),
+            ("City of Qilin", "Eastland")],
+    "AGC": [("City of Golden Lion", "Gaul")],
+}
+
+
+def city_clash_lines() -> list[str]:
+    """Formatted 'ALLIANCE → City [Region]' lines for the City Clash alert."""
+    out = []
+    for tag, cities in CITY_CLASH_TARGETS.items():
+        joined = ", ".join(f"{c} [{r}]" for c, r in cities)
+        out.append(f"**{tag}** → {joined}")
+    return out
+
+
+# Weekly legion events — alternate every other week (WC ↔ BoD). 5 legions of
+# 20–30 members each; times are Sat/Sun at fixed windows with a per-time role.
 LEGION_EVENTS = {
     "WC":  "Wonder Contest",
     "BoD": "Battle of Dawn",
 }
 
-# Legion events can only run Sat/Sun at these UTC times.
-LEGION_TIMES = ["01:00", "04:00", "11:00", "19:00"]
+# Legion events run Sat/Sun at these UTC times (recent change: 04:00 dropped).
+LEGION_TIMES = ["01:00", "11:00", "19:00"]
+
+# The six legion time-slots that get their own pingable role.
+LEGION_SLOTS = ["sat_0100", "sat_1100", "sat_1900", "sun_0100", "sun_1100", "sun_1900"]
 
 # Known event durations (minutes). Events not listed default to 60.
 # World Campaign is a 4-hour window.

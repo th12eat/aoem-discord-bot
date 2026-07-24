@@ -84,6 +84,47 @@ def alliance_roles(guild_id: int, key: str) -> dict:
     return guild_config(guild_id).get("alliances", {}).get(key, {})
 
 
+# ── legion (server-wide) ─────────────────────────────────────────────────────
+# shape under a guild:  "legion": {
+#     "slots": { "sat_0100": <role_id>, ... },   # per-time-slot ping roles
+#     "seed":  { "anchor": "YYYY-MM-DD", "event": "WC" }  # WC/BoD alternation
+#   }
+def legion_config(guild_id: int) -> dict:
+    return guild_config(guild_id).get("legion", {})
+
+
+def set_legion_slot(guild_id: int, slot: str, role_id: int) -> dict:
+    """Bind a ping role to one legion time-slot (sat_0100 … sun_1900)."""
+    with _lock:
+        cfg = load_config()
+        g = cfg["guilds"].setdefault(str(guild_id), {})
+        leg = g.setdefault("legion", {})
+        leg.setdefault("slots", {})[slot] = role_id
+        _write(CONFIG_PATH, cfg)
+        return leg
+
+
+def set_legion_seed(guild_id: int, anchor: str, event: str) -> dict:
+    """Seed the WC↔BoD alternation: `event` runs the weekend of `anchor` (a Sat)."""
+    with _lock:
+        cfg = load_config()
+        g = cfg["guilds"].setdefault(str(guild_id), {})
+        g.setdefault("legion", {})["seed"] = {"anchor": anchor, "event": event}
+        _write(CONFIG_PATH, cfg)
+        return g["legion"]
+
+
+def clear_legion_seed(guild_id: int) -> bool:
+    """Remove the seed (unseed). Returns True if there was one."""
+    with _lock:
+        cfg = load_config()
+        leg = cfg["guilds"].get(str(guild_id), {}).get("legion", {})
+        had = "seed" in leg
+        leg.pop("seed", None)
+        _write(CONFIG_PATH, cfg)
+        return had
+
+
 # ── events ───────────────────────────────────────────────────────────────────
 # shape: { "events": [ {id, guild_id, name, schedule{...}, created_by} ] }
 def load_events() -> list[dict]:
