@@ -1063,6 +1063,47 @@ def _tbd_series_on(evs: list[dict], day_start: datetime) -> list[dict]:
     return out
 
 
+def _legion_summary(guild_id: int, now: datetime) -> str:
+    """A persistent 'this weekend's legion' banner for the top of the board (shown
+    whenever a seed is active, regardless of how many days out the weekend is)."""
+    leg = store.legion_config(guild_id)
+    seed = leg.get("seed")
+    if not seed:
+        return ""
+    sat = legion.weekend_saturday(now.date())
+    ev = legion.event_for_weekend(seed, sat)
+    if not ev:
+        return ""
+    name = catalog.LEGION_EVENTS.get(ev, ev)
+    # list configured slot times (grouped Sat / Sun) that have a role
+    slots = leg.get("slots", {})
+    sat = [legion.SLOT_TIMES[s][1] for s in catalog.LEGION_SLOTS if s in slots and s.startswith("sat")]
+    sun = [legion.SLOT_TIMES[s][1] for s in catalog.LEGION_SLOTS if s in slots and s.startswith("sun")]
+    parts = []
+    if sat: parts.append("Sat " + "/".join(sat))
+    if sun: parts.append("Sun " + "/".join(sun))
+    when = f" · {' · '.join(parts)} UTC" if parts else " · no slot roles set (use /legion_slot)"
+    return f"⚔️ **This weekend's Legion: {name} ({ev})**{when}\n\n"
+
+
+def _legion_board_rows(guild_id: int, start: datetime, end: datetime) -> list[str]:
+    """Legion slot pings that fall within [start,end] (matched to the day window)."""
+    leg = store.legion_config(guild_id)
+    seed = leg.get("seed"); slots = leg.get("slots", {})
+    if not seed:
+        return []
+    rows = []
+    for slot in catalog.LEGION_SLOTS:
+        if slot not in slots:
+            continue
+        fire = legion.next_slot_fire(slot, start)
+        if fire and start <= fire <= end:
+            ev = legion.event_for_weekend(seed, legion.weekend_saturday(fire.date()))
+            name = catalog.LEGION_EVENTS.get(ev, ev)
+            rows.append(f"• {ts(fire,'t')} — **Legion: {name}** ({ts(fire,'R')})")
+    return rows
+
+
 # ── board channel: server-wide events only (alliance events via the button) ──
 async def refresh_board(guild: discord.Guild):
     cfg = store.guild_config(guild.id)
@@ -1084,11 +1125,14 @@ async def refresh_board(guild: discord.Guild):
         # "time TBD" note so people know they're happening (they just aren't pinged).
         rows += [f"• ⏳ **{e['name']}** — _time TBD (set it to enable alerts)_"
                  for e in _tbd_series_on(evs, start)]
+        # legion slot pings that fall in this window
+        rows += _legion_board_rows(guild.id, start, end)
         if not rows:
             return f"__{title}__\n*(none)*"
         return f"__{title}__\n" + "\n".join(rows)
 
     content = (f"📅 **Event Board** (server-wide) — updated {ts(now, 'F')}\n\n"
+               f"{_legion_summary(guild.id, now)}"
                f"{block('Today (UTC)', d0s, d0e)}\n\n"
                f"{block('Tomorrow (UTC)', d1s, d1e)}\n\n"
                f"*In an alliance? Tap **My Alliance Events** below for your own schedule.*")
