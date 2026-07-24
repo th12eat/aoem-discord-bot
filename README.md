@@ -107,7 +107,9 @@ python bot.py
   **Server Members Intent** (the latter is needed to read who has which role).
 - **Invite scopes:** `bot` + `applications.commands`; permissions: Send Messages,
   Read Message History, Mention Everyone (for role pings), **Manage Messages**
-  (needed for the daily board-channel clear).
+  (daily board-channel clear), **Manage Roles** (legion slot fill + weekly purge).
+- **Role hierarchy:** the bot's own role must sit **above** the legion slot roles
+  in Server Settings → Roles, or it can't add/remove members from them.
 
 ## Data
 `data/config.json` (roles/channel per guild) and `data/events.json` (events) —

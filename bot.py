@@ -16,6 +16,7 @@ Admin:
   /series_setup       seed rolling weekly server events (only next occ live; time
                       TBD = no ping until set; Imperial Showdown skips TME weeks)
   /legion_slot        bind a ping role to a legion time-slot (Sat/Sun × 01/11/19)
+  /legion_fill        add pasted members to a slot role (one slot per user)
   /legion_seed        seed WC↔BoD alternation (declare this weekend's event)
   /legion_unseed      stop the alternation (scheduling exceptions)
   /legion_status      show seed + slot roles
@@ -34,11 +35,15 @@ Background:
     My Alliance Events, Changelog, How to use.
   - daily clear: at 00:00 UTC the board channel is purged of everything except
     the board message, then the board is re-posted (needs Manage Messages).
+  - legion pings: each configured slot role is pinged at its Sat/Sun UTC time
+    with the weekend's event; all slot roles are emptied Mon 00:00 UTC (needs
+    Manage Roles + the bot's role above the slot roles).
 
 All times stored + entered in UTC; shown via Discord dynamic timestamps.
 """
 
 import os
+import re
 import uuid
 import logging
 from datetime import datetime, timedelta, timezone
@@ -372,6 +377,58 @@ async def legion_slot(interaction: discord.Interaction, slot: app_commands.Choic
     store.set_legion_slot(interaction.guild_id, slot.value, role.id)
     await interaction.response.send_message(
         f"✅ Legion slot **{slot.name}** will ping {role.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="legion_fill", description="Add members to a legion slot role (removes them from other slots).")
+@app_commands.describe(slot="Which slot to fill",
+                       members="Paste @mentions or user IDs (space/comma separated)")
+@app_commands.choices(slot=_LEGION_SLOT_CHOICES)
+async def legion_fill(interaction: discord.Interaction, slot: app_commands.Choice[str], members: str):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can fill legion slots.", ephemeral=True)
+    cfg = store.legion_config(interaction.guild_id)
+    slots = cfg.get("slots", {})
+    target_id = slots.get(slot.value)
+    target = interaction.guild.get_role(target_id) if target_id else None
+    if target is None:
+        return await interaction.response.send_message(
+            f"⚠️ Slot **{slot.name}** has no role yet — set it with `/legion_slot` first.", ephemeral=True)
+    # all other configured slot roles (exclusivity is enforced across these only)
+    other_roles = [interaction.guild.get_role(rid) for s, rid in slots.items()
+                   if s != slot.value]
+    other_roles = [r for r in other_roles if r is not None]
+
+    # parse user IDs from mentions (<@123>, <@!123>) or bare IDs
+    ids = {int(t) for t in re.findall(r"\d{15,25}", members)}
+    if not ids:
+        return await interaction.response.send_message(
+            "⚠️ No users found — paste `@mentions` or user IDs.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    added, moved, failed, notfound = [], [], [], []
+    for uid in ids:
+        m = interaction.guild.get_member(uid)
+        if m is None:
+            notfound.append(uid); continue
+        try:
+            # remove from any other slot role first (one slot per user)
+            drop = [r for r in other_roles if r in m.roles]
+            if drop:
+                await m.remove_roles(*drop, reason="legion slot exclusivity")
+            if target in m.roles:
+                (moved if drop else added).append(m.display_name)
+            else:
+                await m.add_roles(target, reason="legion fill")
+                (moved if drop else added).append(m.display_name)
+        except discord.Forbidden:
+            failed.append(m.display_name)
+        except discord.DiscordException:
+            failed.append(m.display_name)
+    parts = [f"✅ **{slot.name}** ({target.mention}) updated."]
+    if added:   parts.append(f"Added: {', '.join(added)}")
+    if moved:   parts.append(f"Moved from another slot: {', '.join(moved)}")
+    if failed:  parts.append(f"⚠️ Failed (check bot's Manage Roles + role order): {', '.join(failed)}")
+    if notfound:parts.append(f"⚠️ Not in server: {', '.join(str(u) for u in notfound)}")
+    await interaction.followup.send("\n".join(parts), ephemeral=True)
 
 
 @bot.tree.command(name="legion_seed", description="Seed the WC↔BoD alternation (declare this weekend's event).")
@@ -1145,11 +1202,34 @@ async def daily_clear():
     if _last_clear_date is None:
         _last_clear_date = today
         return
+    is_monday = today.weekday() == 0
     _last_clear_date = today
     for guild in bot.guilds:
         roll_series(guild.id)          # advance any series whose day has passed
         purge_completed(guild.id)      # drop events that have fully concluded
+        if is_monday:                  # weekly legion roster reset
+            await purge_legion_roles(guild)
         await clear_board_channel(guild)
+
+
+async def purge_legion_roles(guild: discord.Guild):
+    """Empty all configured legion slot roles (Mon 00:00 UTC weekly reset) so no
+    one who isn't attending this week's legion gets pinged. Admins refill via
+    /legion_fill on Thu/Fri."""
+    slots = store.legion_config(guild.id).get("slots", {})
+    total = 0
+    for rid in slots.values():
+        role = guild.get_role(rid)
+        if role is None:
+            continue
+        for m in list(role.members):
+            try:
+                await m.remove_roles(role, reason="weekly legion roster reset")
+                total += 1
+            except discord.DiscordException:
+                pass
+    if total:
+        log.info("purged %d legion role membership(s) in guild %s", total, guild.id)
 
 
 def purge_completed(guild_id: int):
