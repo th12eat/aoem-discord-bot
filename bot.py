@@ -16,8 +16,9 @@ Admin:
   /series_setup       seed rolling weekly server events (only next occ live; time
                       TBD = no ping until set; Imperial Showdown skips TME weeks)
   /legion_slot        bind a ping role to a legion time-slot (Sat/Sun × 01/11/19)
-  /legion_fill        add pasted members to a slot role (one slot per user)
-  /legion_list        list slot members (filter by alliance and/or slot)
+  /legion_fill        add members to a slot (discord → role, names → roster)
+  /legion_remove      remove members (discord + non-discord names) from all slots
+  /legion_list        list slot members by alliance (discord + non-discord)
   /legion_seed        seed WC↔BoD alternation (declare this weekend's event)
   /legion_unseed      stop the alternation (scheduling exceptions)
   /legion_status      show seed + slot roles
@@ -381,96 +382,175 @@ async def legion_slot(interaction: discord.Interaction, slot: app_commands.Choic
         f"✅ Legion slot **{slot.name}** will ping {role.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="legion_fill", description="Add members to a legion slot role (removes them from other slots).")
+def _caller_alliance(member: discord.Member, override: str | None) -> str | None:
+    """The alliance a legion fill files non-discord names under: an explicit
+    override if given, else the caller's single R4 alliance. None if ambiguous."""
+    if override:
+        return override
+    r4 = r4_alliances(member)
+    return next(iter(r4)) if len(r4) == 1 else None
+
+
+def _member_alliance(m: discord.Member) -> str:
+    """Which alliance a discord member belongs to (by member role), or 'Other'."""
+    a = member_alliances(m)
+    return next(iter(a)) if a else "Other"
+
+
+@bot.tree.command(name="legion_fill", description="Add members to a legion slot (discord users → role, plain names → roster).")
 @app_commands.describe(slot="Which slot to fill",
-                       members="Paste @mentions or user IDs (space/comma separated)")
-@app_commands.choices(slot=_LEGION_SLOT_CHOICES)
-async def legion_fill(interaction: discord.Interaction, slot: app_commands.Choice[str], members: str):
+                       members="Mix of @mentions/IDs (discord) and plain names (non-discord), comma/space/newline separated",
+                       alliance="Alliance for non-discord names (defaults to your own alliance)")
+@app_commands.choices(slot=_LEGION_SLOT_CHOICES, alliance=_ALLIANCE_CHOICES)
+async def legion_fill(interaction: discord.Interaction, slot: app_commands.Choice[str], members: str,
+                      alliance: app_commands.Choice[str] | None = None):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
         return await interaction.response.send_message("Only an R4 can fill legion slots.", ephemeral=True)
-    cfg = store.legion_config(interaction.guild_id)
-    slots = cfg.get("slots", {})
+    slots = store.legion_config(interaction.guild_id).get("slots", {})
     target_id = slots.get(slot.value)
     target = interaction.guild.get_role(target_id) if target_id else None
     if target is None:
         return await interaction.response.send_message(
             f"⚠️ Slot **{slot.name}** has no role yet — set it with `/legion_slot` first.", ephemeral=True)
-    # all other configured slot roles (exclusivity is enforced across these only)
-    other_roles = [interaction.guild.get_role(rid) for s, rid in slots.items()
-                   if s != slot.value]
-    other_roles = [r for r in other_roles if r is not None]
+    other_roles = [r for r in (interaction.guild.get_role(rid) for s, rid in slots.items()
+                   if s != slot.value) if r is not None]
 
-    # parse user IDs from mentions (<@123>, <@!123>) or bare IDs
-    ids = {int(t) for t in re.findall(r"\d{15,25}", members)}
-    if not ids:
+    # alliance for non-discord names: explicit param or the caller's own alliance
+    alli = _caller_alliance(interaction.user, alliance.value if alliance else None)
+
+    # split into discord mentions/IDs vs plain non-discord names.
+    ids = [int(t) for t in re.findall(r"<@!?(\d{15,25})>", members)]
+    # strip mention tokens, then split the remainder on comma/newline into names
+    leftover = re.sub(r"<@!?\d{15,25}>", "", members)
+    names = [n.strip() for n in re.split(r"[,\n]+", leftover) if n.strip()]
+    # a bare numeric token (raw ID pasted without <@>) counts as an ID, not a name
+    for n in list(names):
+        if re.fullmatch(r"\d{15,25}", n):
+            ids.append(int(n)); names.remove(n)
+    ids = set(ids)
+
+    if not ids and not names:
         return await interaction.response.send_message(
-            "⚠️ No users found — paste `@mentions` or user IDs.", ephemeral=True)
+            "⚠️ Nothing to add — paste @mentions/IDs and/or plain names.", ephemeral=True)
+    if names and alli is None:
+        return await interaction.response.send_message(
+            "⚠️ You gave non-discord names but I can't tell which alliance — pass the `alliance` option "
+            "(you're not a single-alliance R4).", ephemeral=True)
+
     await interaction.response.defer(ephemeral=True)
-    added, moved, failed, notfound = [], [], [], []
+    added, moved, failed = [], [], []
     for uid in ids:
         m = interaction.guild.get_member(uid)
         if m is None:
-            notfound.append(uid); continue
+            # not in the server → treat their ID as unresolved; skip (report)
+            failed.append(f"id:{uid} (not in server)"); continue
         try:
-            # remove from any other slot role first (one slot per user)
             drop = [r for r in other_roles if r in m.roles]
             if drop:
                 await m.remove_roles(*drop, reason="legion slot exclusivity")
-            if target in m.roles:
-                (moved if drop else added).append(m.display_name)
-            else:
+            if target not in m.roles:
                 await m.add_roles(target, reason="legion fill")
-                (moved if drop else added).append(m.display_name)
-        except discord.Forbidden:
-            failed.append(m.display_name)
+            (moved if drop else added).append(m.display_name)
         except discord.DiscordException:
             failed.append(m.display_name)
+    # non-discord names → roster (deduped, moved off other slots)
+    if names:
+        store.add_legion_names(interaction.guild_id, slot.value, alli, names)
+
     parts = [f"✅ **{slot.name}** ({target.mention}) updated."]
-    if added:   parts.append(f"Added: {', '.join(added)}")
-    if moved:   parts.append(f"Moved from another slot: {', '.join(moved)}")
-    if failed:  parts.append(f"⚠️ Failed (check bot's Manage Roles + role order): {', '.join(failed)}")
-    if notfound:parts.append(f"⚠️ Not in server: {', '.join(str(u) for u in notfound)}")
+    if added: parts.append(f"Added (discord): {', '.join(added)}")
+    if moved: parts.append(f"Moved from another slot: {', '.join(moved)}")
+    if names: parts.append(f"Added (non-discord · {alli}): {', '.join(names)}")
+    if failed: parts.append(f"⚠️ Failed (check bot's Manage Roles + role order): {', '.join(failed)}")
     await interaction.followup.send("\n".join(parts), ephemeral=True)
 
 
-@bot.tree.command(name="legion_list", description="List legion slot members (optionally filtered by alliance).")
+@bot.tree.command(name="legion_remove", description="Remove members from legion slots (discord users + non-discord names).")
+@app_commands.describe(members="@mentions/IDs and/or plain names to remove from ALL legion slots")
+async def legion_remove(interaction: discord.Interaction, members: str):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can remove legion members.", ephemeral=True)
+    slots = store.legion_config(interaction.guild_id).get("slots", {})
+    slot_roles = [r for r in (interaction.guild.get_role(rid) for rid in slots.values()) if r is not None]
+    ids = [int(t) for t in re.findall(r"<@!?(\d{15,25})>", members)]
+    leftover = re.sub(r"<@!?\d{15,25}>", "", members)
+    names = [n.strip() for n in re.split(r"[,\n]+", leftover) if n.strip()]
+    for n in list(names):
+        if re.fullmatch(r"\d{15,25}", n):
+            ids.append(int(n)); names.remove(n)
+    await interaction.response.defer(ephemeral=True)
+    removed_d, failed = [], []
+    for uid in set(ids):
+        m = interaction.guild.get_member(uid)
+        if m is None:
+            continue
+        drop = [r for r in slot_roles if r in m.roles]
+        if not drop:
+            continue
+        try:
+            await m.remove_roles(*drop, reason="legion remove")
+            removed_d.append(m.display_name)
+        except discord.DiscordException:
+            failed.append(m.display_name)
+    removed_n = store.remove_legion_names(interaction.guild_id, names) if names else 0
+    parts = ["🗑️ Legion removal done."]
+    if removed_d: parts.append(f"Removed (discord): {', '.join(removed_d)}")
+    if removed_n: parts.append(f"Removed (non-discord): {removed_n} name(s)")
+    if not removed_d and not removed_n: parts.append("Nobody matched (already off all slots).")
+    if failed: parts.append(f"⚠️ Failed: {', '.join(failed)}")
+    await interaction.followup.send("\n".join(parts), ephemeral=True)
+
+
+_SLOT_LABEL = {c.value: c.name for c in _LEGION_SLOT_CHOICES}
+# alliance display order for rosters (known alliances first, then Other)
+_ALLI_ORDER = list(ALLIANCES.keys()) + ["Other"]
+
+
+def _legion_roster_text(guild: discord.Guild, want_slots, filter_alliance=None) -> str:
+    """Roster for the given slots, grouped by alliance, combining discord role
+    members (auto-tagged by their alliance role) with stored non-discord names."""
+    leg = store.legion_config(guild.id)
+    slots_cfg = leg.get("slots", {}); roster = leg.get("roster", {})
+    blocks = []
+    for s in want_slots:
+        # gather {alliance: [names]} for this slot
+        by_alli: dict[str, list[str]] = {}
+        role = guild.get_role(slots_cfg.get(s)) if slots_cfg.get(s) else None
+        if role is not None:
+            for m in role.members:
+                a = _member_alliance(m)
+                by_alli.setdefault(a, []).append(m.display_name)
+        for a, lst in roster.get(s, {}).items():          # non-discord names
+            by_alli.setdefault(a, []).extend(f"{n} ◇" for n in lst)  # ◇ = non-discord
+        if filter_alliance:
+            by_alli = {a: v for a, v in by_alli.items() if a == filter_alliance}
+        total = sum(len(v) for v in by_alli.values())
+        lines = [f"__{_SLOT_LABEL.get(s, s)}__ ({total})"]
+        if total == 0:
+            lines.append("*(none)*")
+        else:
+            for a in _ALLI_ORDER:
+                if by_alli.get(a):
+                    lines.append(f"**{a}:** " + ", ".join(sorted(by_alli[a])))
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) if blocks else "*(no slots configured)*"
+
+
+@bot.tree.command(name="legion_list", description="List legion slot members (discord + non-discord), grouped by alliance.")
 @app_commands.describe(slot="Limit to one slot (default: all slots)",
-                       alliance="Limit to members of one alliance (default: everyone)")
+                       alliance="Limit to one alliance (default: all)")
 @app_commands.choices(slot=_LEGION_SLOT_CHOICES, alliance=_ALLIANCE_CHOICES)
 async def legion_list(interaction: discord.Interaction,
                       slot: app_commands.Choice[str] | None = None,
                       alliance: app_commands.Choice[str] | None = None):
-    slots_cfg = store.legion_config(interaction.guild_id).get("slots", {})
-    if not slots_cfg:
+    leg = store.legion_config(interaction.guild_id)
+    if not leg.get("slots") and not leg.get("roster"):
         return await interaction.response.send_message(
-            "No legion slot roles configured yet — set them with `/legion_slot`.", ephemeral=True)
-    # optional alliance member-role filter
-    alli_role = None
-    if alliance:
-        rid = store.alliance_roles(interaction.guild_id, alliance.value).get("member_role_id")
-        alli_role = interaction.guild.get_role(rid) if rid else None
-        if alli_role is None:
-            return await interaction.response.send_message(
-                f"⚠️ {alliance.value} has no member role registered (`/config_alliance`).", ephemeral=True)
-
+            "No legion slots configured yet — set them with `/legion_slot`.", ephemeral=True)
     want = [slot.value] if slot else catalog.LEGION_SLOTS
-    slot_label = {c.value: c.name for c in _LEGION_SLOT_CHOICES}
-    blocks = []
-    for s in want:
-        rid = slots_cfg.get(s)
-        role = interaction.guild.get_role(rid) if rid else None
-        if role is None:
-            continue
-        members = role.members
-        if alli_role is not None:
-            members = [m for m in members if alli_role in m.roles]
-        names = sorted(m.display_name for m in members)
-        head = f"__{slot_label.get(s, s)}__ ({len(names)})"
-        blocks.append(head + ("\n" + "\n".join(f"• {n}" for n in names) if names else "\n*(none)*"))
+    body = _legion_roster_text(interaction.guild, want, alliance.value if alliance else None)
     who = f" · {alliance.value} only" if alliance else ""
-    title = f"⚔️ **Legion members{who}**"
-    body = "\n\n".join(blocks) if blocks else "*(no matching slots configured)*"
-    await _send_long_ephemeral(interaction, f"{title}\n\n{body}", kind="legion_list")
+    await _send_long_ephemeral(interaction, f"⚔️ **Legion members{who}**\n\n{body}", kind="legion_list")
 
 
 @bot.tree.command(name="legion_seed", description="Seed the WC↔BoD alternation (declare this weekend's event).")
@@ -932,6 +1012,15 @@ async def scheduler_tick():
                     name = catalog.LEGION_EVENTS.get(ev, ev)
                     text = (f"<@&{role_id}> **{name} ({ev})** — legion {when} "
                             f"({hhmm} UTC). Assemble your legion!")
+                    # at-start ping: append the full roster (all 4 alliances) for
+                    # this slot, incl. discord + non-discord members.
+                    if offset == 0:
+                        roster = _legion_roster_text(guild, [slot])
+                        if roster and "*(none)*" not in roster:
+                            tail = "\n\n" + roster
+                            if len(text) + len(tail) > 1990:
+                                tail = tail[:1990 - len(text)] + "…"
+                            text += tail
                     try:
                         msg = await channel.send(text)
                     except discord.DiscordException as ex:
@@ -1333,6 +1422,7 @@ async def purge_legion_roles(guild: discord.Guild):
                 total += 1
             except discord.DiscordException:
                 pass
+    store.clear_legion_roster(guild.id)   # also wipe non-discord roster names
     if total:
         log.info("purged %d legion role membership(s) in guild %s", total, guild.id)
 

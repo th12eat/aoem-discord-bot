@@ -88,9 +88,60 @@ def alliance_roles(guild_id: int, key: str) -> dict:
 # shape under a guild:  "legion": {
 #     "slots": { "sat_0100": <role_id>, ... },   # per-time-slot ping roles
 #     "seed":  { "anchor": "YYYY-MM-DD", "event": "WC" }  # WC/BoD alternation
+#     "roster": { "sat_0100": { "WC1": ["Name", ...], ... }, ... }  # NON-discord
 #   }
 def legion_config(guild_id: int) -> dict:
     return guild_config(guild_id).get("legion", {})
+
+
+def _legion(cfg, guild_id):
+    return cfg["guilds"].setdefault(str(guild_id), {}).setdefault("legion", {})
+
+
+def add_legion_names(guild_id: int, slot: str, alliance: str, names: list[str]) -> None:
+    """Add non-discord member names to a slot under an alliance (deduped, and
+    removed from any OTHER slot — one slot per person, case-insensitive)."""
+    with _lock:
+        cfg = load_config()
+        leg = _legion(cfg, guild_id)
+        roster = leg.setdefault("roster", {})
+        low = {n.lower() for n in names}
+        # remove these names from every other slot (exclusivity)
+        for s, per_all in roster.items():
+            if s == slot:
+                continue
+            for a, lst in per_all.items():
+                per_all[a] = [n for n in lst if n.lower() not in low]
+        bucket = roster.setdefault(slot, {}).setdefault(alliance, [])
+        have = {n.lower() for n in bucket}
+        for n in names:
+            if n.lower() not in have:
+                bucket.append(n); have.add(n.lower())
+        _write(CONFIG_PATH, cfg)
+
+
+def remove_legion_names(guild_id: int, names: list[str]) -> int:
+    """Remove non-discord names from ALL slots/alliances. Returns count removed."""
+    with _lock:
+        cfg = load_config()
+        roster = _legion(cfg, guild_id).get("roster", {})
+        low = {n.lower() for n in names}
+        removed = 0
+        for per_all in roster.values():
+            for a, lst in per_all.items():
+                kept = [n for n in lst if n.lower() not in low]
+                removed += len(lst) - len(kept)
+                per_all[a] = kept
+        _write(CONFIG_PATH, cfg)
+        return removed
+
+
+def clear_legion_roster(guild_id: int) -> None:
+    """Wipe all non-discord roster names (weekly Monday reset)."""
+    with _lock:
+        cfg = load_config()
+        _legion(cfg, guild_id)["roster"] = {}
+        _write(CONFIG_PATH, cfg)
 
 
 def set_legion_slot(guild_id: int, slot: str, role_id: int) -> dict:
