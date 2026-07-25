@@ -86,6 +86,10 @@ _fired: set[str] = set()
 #                         alert (deleted once the event's duration elapses)
 _alert_1h: dict[str, int] = {}
 _alert_now: dict[str, tuple[int, int, datetime]] = {}
+# last minute the scheduler processed (UTC, second/micro zeroed). Used to catch
+# up any target minute skipped by @tasks.loop drift, so a once-a-week ping can't
+# be lost just because a tick landed a few seconds off the exact minute.
+_last_tick: datetime | None = None
 
 
 def _event_duration_min(e: dict) -> int:
@@ -925,11 +929,12 @@ async def _list_window(interaction, start, end, label):
 #     auto-delete (a stage lasts days); they carry the stage's end info instead
 @tasks.loop(minutes=1)
 async def scheduler_tick():
-    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    global _last_tick
+    real_now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
 
     # 1) expire any "starting now" alerts whose duration has elapsed
     for okey, (cid, mid, expire) in list(_alert_now.items()):
-        if now >= expire:
+        if real_now >= expire:
             ch = bot.get_channel(cid)
             if ch:
                 try:
@@ -939,7 +944,19 @@ async def scheduler_tick():
                     pass
             _alert_now.pop(okey, None)
 
-    for guild in bot.guilds:
+    # Build the list of minutes to process this tick. Normally just this minute,
+    # but if the loop drifted / was delayed, catch up every minute we skipped
+    # (capped at 180 so a long outage doesn't fire a flood of stale alerts).
+    if _last_tick is None or real_now <= _last_tick:
+        minutes = [real_now]
+    else:
+        gap = int((real_now - _last_tick).total_seconds() // 60)
+        gap = min(gap, 180)
+        minutes = [real_now - timedelta(minutes=k) for k in range(gap - 1, -1, -1)]
+    _last_tick = real_now
+
+    for now in minutes:
+      for guild in bot.guilds:
         cfg = store.guild_config(guild.id)
         chan_id = cfg.get("board_channel_id")
         channel = guild.get_channel(chan_id) if chan_id else None
