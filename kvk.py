@@ -92,6 +92,23 @@ KVK_DEFS = {
         # Score three ways: cultivate ours (Beast Taming), then defend ours +
         # attack theirs (Attack/Defense). Runestones grow our Behemoth AND give
         # 10 personal pts each. Details mirror the Behemoth dashboard.
+        #
+        # Trial of Scion: four fixed 30-min windows/day during Beast Taming. Each
+        # window's Scion spawns on ONE server. `server` is our best-known default
+        # (mirrors the dashboard: 01:00 & 11:00 on ours, 04:00 & 19:00 on theirs).
+        # We don't know for certain which side hosts the first window until the
+        # first Trial actually starts — /event_edit scion_first can flip the whole
+        # rotation once it's confirmed in-game.
+        "scion": {
+            "stage_key": "tame",      # runs during Beast Taming
+            "duration": 30,           # minutes per window
+            "windows": [
+                {"time": "01:00", "server": "ours"},
+                {"time": "04:00", "server": "theirs"},
+                {"time": "11:00", "server": "ours"},
+                {"time": "19:00", "server": "theirs"},
+            ],
+        },
         "stages": [
             {"key": "mm", "title": "Matchmaking", "days": 1,
              "summary": "Servers paired — scout & plan (no scoring yet)",
@@ -199,3 +216,41 @@ def stage_active_on(short: str, start: datetime, target, stage_keys=None) -> boo
         if st["start"].date() <= target < st["end"].date():
             return True
     return False
+
+
+def scion_windows(short: str, start: datetime, flip: bool = False) -> list[dict]:
+    """All Trial of Scion windows for this KvK, as absolute UTC datetimes.
+
+    Only KvKs with a `scion` config (Behemoth Conquest) produce windows; others
+    return []. Each window falls on every day of the configured stage (Beast
+    Taming = 3 days → 4 windows/day → 12 total).
+
+    `flip` swaps which server hosts each window (ours ↔ theirs) — used once the
+    real first-Trial host is confirmed in-game, since the default is only our
+    best guess.
+
+    Returns dicts: {start, end, server ('ours'|'theirs'), time ('HH:MM')}.
+    """
+    defn = KVK_DEFS.get(short, {})
+    cfg = defn.get("scion")
+    if not cfg:
+        return []
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    stage = next((s for s in compute_stages(short, start) if s["key"] == cfg["stage_key"]), None)
+    if stage is None:
+        return []
+    dur = timedelta(minutes=cfg.get("duration", 30))
+    out = []
+    day = stage["start"].date()
+    last = stage["end"].date()  # exclusive
+    while day < last:
+        for w in cfg["windows"]:
+            h, m = (int(x) for x in w["time"].split(":"))
+            ws = datetime(day.year, day.month, day.day, h, m, tzinfo=timezone.utc)
+            server = w["server"]
+            if flip:
+                server = "theirs" if server == "ours" else "ours"
+            out.append({"start": ws, "end": ws + dur, "server": server, "time": w["time"]})
+        day += timedelta(days=1)
+    return sorted(out, key=lambda x: x["start"])

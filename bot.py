@@ -780,13 +780,17 @@ async def event_remove(interaction: discord.Interaction, event: str):
                        time="New UTC time HH:MM — for recurring events (optional)",
                        datetime_="New UTC date+time YYYY-MM-DDTHH:MM — for one-time/KvK start (optional)",
                        duration="New duration in minutes (optional)",
-                       scope="New scope (optional)")
+                       scope="New scope (optional)",
+                       scion_first="Behemoth only: which server hosts the FIRST daily Trial of Scion window")
 @app_commands.autocomplete(event=_remove_autocomplete)  # same picker: events you may admin
-@app_commands.choices(scope=_SCOPE_CHOICES)
+@app_commands.choices(scope=_SCOPE_CHOICES,
+                      scion_first=[app_commands.Choice(name="Our server (#008) — default", value="ours"),
+                                   app_commands.Choice(name="Opponent server", value="theirs")])
 async def event_edit(interaction: discord.Interaction, event: str,
                      name: str | None = None, time: str | None = None,
                      datetime_: str | None = None, duration: int | None = None,
-                     scope: app_commands.Choice[str] | None = None):
+                     scope: app_commands.Choice[str] | None = None,
+                     scion_first: app_commands.Choice[str] | None = None):
     ev = next((e for e in store.events_for_guild(interaction.guild_id) if e["id"] == event.strip()), None)
     if ev is None:
         return await interaction.response.send_message("⚠️ No matching event found.", ephemeral=True)
@@ -809,6 +813,14 @@ async def event_edit(interaction: discord.Interaction, event: str,
         changes["duration"] = max(1, duration)
     if scope:
         changes["scope"] = scope.value
+    if scion_first is not None:
+        # Only Behemoth Conquest has Trial of Scion windows.
+        if stype != "kvk" or not kvk.KVK_DEFS.get(ev["schedule"].get("short"), {}).get("scion"):
+            return await interaction.response.send_message(
+                "⚠️ `scion_first` only applies to **Behemoth Conquest** (Trial of Scion).", ephemeral=True)
+        # Config default = first window ("01:00") on "ours"; flip when they host first.
+        default_first = kvk.KVK_DEFS[ev["schedule"]["short"]]["scion"]["windows"][0]["server"]
+        changes["scion_flip"] = (scion_first.value != default_first)
     if time:
         # accept one or more comma-separated HH:MM (a series occurrence can have
         # several, e.g. Starfall Vein's four windows)
@@ -840,9 +852,13 @@ async def event_edit(interaction: discord.Interaction, event: str,
         return await interaction.response.send_message("Nothing to change — pass at least one field.", ephemeral=True)
 
     updated = store.update_event(event.strip(), interaction.guild_id, changes)
+    extra = ""
+    if "scion_flip" in changes:
+        host = "opponent server" if scion_first.value == "theirs" else "our server (#008)"
+        extra = f" · 🐘 first daily Trial of Scion → **{host}**"
     await interaction.response.send_message(
         f"✏️ Updated **{updated['name']}** (`{updated['id']}`) — {describe_schedule(updated['schedule'])}"
-        + (f" · {updated.get('duration')}min" if updated.get('duration') else ""),
+        + (f" · {updated.get('duration')}min" if updated.get('duration') else "") + extra,
         ephemeral=True)
     await refresh_board(interaction.guild)
 
@@ -1001,6 +1017,28 @@ async def scheduler_tick():
                             expire = dt + timedelta(minutes=_event_duration_min(e))
                             _alert_now[okey] = (channel.id, msg.id, expire)
 
+            # ── Trial of Scion windows (Behemoth Conquest, during Beast Taming) ──
+            #   4 fixed 30-min windows/day; each pings at its start with what to do,
+            #   the duration, and which server it's on. Self-deletes after 30 min.
+            if is_kvk:
+                short = e["schedule"]["short"]
+                kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+                flip = bool(e.get("scion_flip"))
+                for w in kvk.scion_windows(short, kstart, flip=flip):
+                    if w["start"] != now:
+                        continue
+                    okey = f"scion|{e['id']}|{w['start'].isoformat()}"
+                    if okey in _fired:
+                        continue
+                    _fired.add(okey)
+                    text = _scion_alert_text(e, role_id, w)
+                    try:
+                        msg = await channel.send(text)
+                    except discord.DiscordException as ex:
+                        log.error("scion alert send failed: %s", ex)
+                        continue
+                    _alert_now[okey] = (channel.id, msg.id, w["end"])
+
         # ── legion slot pings (server-wide, WC↔BoD alternating) ──
         #   Same lifecycle as normal events: T-1h + at-start; the 1h alert is
         #   deleted when start fires, and the start alert self-deletes after the
@@ -1096,6 +1134,24 @@ def _alert_text(e, scope, role_id, when, dt, is_kvk):
     if e["name"] == "City Clash":
         text += "\n\n**Target cities:**\n" + "\n".join(catalog.city_clash_lines())
     return text
+
+
+def _scion_alert_text(e, role_id, w):
+    """A Trial of Scion window ping: which server it spawns on, the 30-min
+    duration, and what to do. `w` is a window dict from kvk.scion_windows()."""
+    where = "our server" if w["server"] == "ours" else "the opponent server"
+    where_emoji = "🛡️" if w["server"] == "ours" else "⚔️"
+    dur = int((w["end"] - w["start"]).total_seconds() // 60)
+    lines = [
+        f"<@&{role_id}> **Trial of Scion — LIVE now** {where_emoji} on **{where}** — {ts_both(w['start'])}",
+        f"_Open-field kill event · {dur}-min window · farm Scions for Awaken Runestones + eliminations._",
+        "**Do now:** teleport to the Scion spawns, kill Scions for runestones & nearby eliminations, "
+        "then **donate runestones** (tips Bloodline Purity + 10 personal pts each).",
+    ]
+    if w["server"] == "theirs":
+        lines.append("⚠️ On **the opponent server** — expect PvP; watch for cross-border tiles (zeroing risk).")
+    lines.append(f"⏳ Window closes {ts(w['end'], 'R')}.")
+    return "\n".join(lines)
 
 
 # ── long-text ephemeral sender ───────────────────────────────────────────────
@@ -1271,6 +1327,24 @@ def _legion_board_rows(guild_id: int, start: datetime, end: datetime) -> list[st
     return rows
 
 
+def _scion_board_rows(events: list[dict], start: datetime, end: datetime) -> list[str]:
+    """Trial of Scion windows (Behemoth Conquest, Beast Taming) within [start,end]."""
+    rows = []
+    for e in events:
+        s = e.get("schedule", {})
+        if s.get("type") != "kvk":
+            continue
+        try:
+            kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
+        except (ValueError, KeyError):
+            continue
+        for w in kvk.scion_windows(s["short"], kstart, flip=bool(e.get("scion_flip"))):
+            if start <= w["start"] <= end:
+                where = "our server" if w["server"] == "ours" else "opponent server"
+                rows.append(f"• {ts(w['start'],'t')} — **Trial of Scion** · {where} ({ts(w['start'],'R')})")
+    return rows
+
+
 # ── board channel: server-wide events only (alliance events via the button) ──
 async def refresh_board(guild: discord.Guild):
     cfg = store.guild_config(guild.id)
@@ -1294,6 +1368,8 @@ async def refresh_board(guild: discord.Guild):
                  for e in _tbd_series_on(evs, start)]
         # legion slot pings that fall in this window
         rows += _legion_board_rows(guild.id, start, end)
+        # Trial of Scion windows (Behemoth Conquest, during Beast Taming)
+        rows += _scion_board_rows(evs, start, end)
         if not rows:
             return f"__{title}__\n*(none)*"
         return f"__{title}__\n" + "\n".join(rows)

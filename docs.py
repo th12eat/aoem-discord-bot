@@ -8,10 +8,20 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.7.0 — Trial of Scion window alerts**
+• **Behemoth Conquest** now pings the **Trial of Scion** windows automatically —
+  four 30-min windows/day through **Beast Taming**. Each ping says which server it's
+  on (🛡️ **ours #008** vs ⚔️ **opponent**), the 30-min duration, and what to do
+  (kill Scions for runestones + eliminations, then donate). They also show on the
+  board on Beast-Taming days and self-clear after each window.
+• The host rotation defaults to the dashboard's best guess. Once the real first
+  window is confirmed in-game, flip the whole rotation with
+  `/event_edit … scion_first:<Our server | Opponent server>`.
 
 **v1.6.0 — Legions, City Clash targets, KvK-stage fix**
 • **Legions are back, server-wide:** `/legion_seed` declares this weekend's event
@@ -114,7 +124,9 @@ Pings that alliance's member role; only its R4 may create/edit.
 • `/event_add` (scope: your alliance) — recurring/one-time alliance event. *[Alliance]*
 
 **✏️ Manage — _R4 of the event's scope_ (or Manage Server)**
-• `/event_edit` — change an event's name, time, duration, or scope. *[scope of the event]*
+• `/event_edit` — change an event's name, time, duration, or scope. For **Behemoth
+  Conquest**, `scion_first` flips which server hosts the first daily Trial of Scion
+  window. *[scope of the event]*
 • `/event_remove` — delete an event. *[scope of the event]*
 
 **👀 Look up — _personal to you_**
