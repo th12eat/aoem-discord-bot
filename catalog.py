@@ -7,7 +7,7 @@ lets an admin name a one-off. Legion + KvK are fixed sets (no custom).
 # Server-wide "opening soon" events (alert everyone; entered as a date RANGE).
 SERVER_EVENTS = [
     "Warrior's Trial", "Fallen Frontier", "Treasure Hunt", "World Campaign",
-    "Marauder's", "Rainbow Current", "Starfall Vein",
+    "Marauder's Hunt", "Rainbow Current", "Starfall Vein",
     "Imperial Showdown", "City Clash",
 ]
 
@@ -38,7 +38,7 @@ SERIES = {
 # Alliance leadership actionable events (specific date/time).
 ALLIANCE_EVENTS = [
     "Warrior's Trial", "Fallen Frontier", "Treasure Hunt", "World Campaign",
-    "Marauder's", "Trojan Turmoil",
+    "Marauder's Hunt", "Trojan Turmoil",
 ]
 
 # City Clash — which alliance is expected to take which city (with its region).
