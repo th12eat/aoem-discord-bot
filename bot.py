@@ -64,7 +64,7 @@ import series as series_mod
 import legion
 import docs
 from alliances import ALLIANCES, SERVER_SCOPE, SCOPES, scope_label, scope_display
-from helpers import (ts, ts_both, describe_schedule, can_admin_scope,
+from helpers import (ts, ts_both, utc_date, describe_schedule, can_admin_scope,
                      ping_role_id, is_any_r4, member_alliances, r4_alliances)
 
 load_dotenv()
@@ -624,7 +624,7 @@ async def kvk_add(interaction: discord.Interaction, event: app_commands.Choice[s
     schedule = {"type": "kvk", "short": short, "start": f"{start_date}T00:00"}
     ev = _mk_event(interaction, name, SERVER_SCOPE, schedule)
     stages = kvk.compute_stages(short, datetime.fromisoformat(f"{start_date}T00:00").replace(tzinfo=timezone.utc))
-    preview = "\n".join(f"• {s['title']} — {ts(s['start'],'D')}" for s in stages)
+    preview = "\n".join(f"• {s['title']} — {utc_date(s['start'])}" for s in stages)
     # KvK bypasses duplicate-time check (stage-based); add directly.
     store.add_event(ev)
     await interaction.response.send_message(

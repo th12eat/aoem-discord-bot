@@ -89,12 +89,35 @@ KVK_DEFS = {
     },
     "BC": {
         "name": "Behemoth Conquest",
+        # Score three ways: cultivate ours (Beast Taming), then defend ours +
+        # attack theirs (Attack/Defense). Runestones grow our Behemoth AND give
+        # 10 personal pts each. Details mirror the Behemoth dashboard.
         "stages": [
-            {"key": "mm",   "title": "Matchmaking", "days": 1, "summary": "Find a match for BC (wait)"},
+            {"key": "mm", "title": "Matchmaking", "days": 1,
+             "summary": "Servers paired — scout & plan (no scoring yet)",
+             "actionable": "Scout the enemy server; line up rally leaders for Beast Taming",
+             "prep": "Save Scion attempts & speed-ups for Beast Taming, which opens {nextDate}"},
             {"key": "tame", "title": "Beast Taming", "days": 3,
-             "summary": "Daily events to buff your Elephant", "actionable": "Trials of Scion + other dailies"},
-            {"key": "ad",   "title": "Attack / Defense", "days": 2,
-             "summary": "Defend or attack the Elephant at set time", "actionable": "Defend or attack the Elephant"},
+             "summary": "Cultivate our Behemoth — farm & donate Awaken Runestones",
+             "king": "Runestones tip Bloodline Purity our way and pay 10 personal pts each — donate, don't hoard",
+             "scoring": [
+                "Trial of Scion — farm Scions in the 30-min window (runestones + eliminations)",
+                "Cultivation Exploration — 3 open at 04:00 / 12:00 / 20:00 UTC, 18 runestones each",
+                "Rally vs Tribes — join every called rally (Days 2 & 4 only)",
+                "Maxing everything across the 3 days ≈ 3,036 runestones",
+             ],
+             "actionable": "Do your Scion window + all 3 Cultivation Explorations daily; donate as you go",
+             "prep": "Be online for the Attack/Defense windows starting {nextDate} — that's where most of the score is won"},
+            {"key": "ad", "title": "Attack / Defense", "days": 2,
+             "summary": "90-min cross-server Behemoth invasions — the score is won here",
+             "scoring": [
+                "Only RALLIES damage the Behemoth (1,000/sec each) — more separate rallies = more damage",
+                "Hold rallies long: after 5 min, damage ramps +500 every 15s — don't let them disband",
+                "Milestones dwarf chip damage: a stack = 1B, the kill = 5B",
+                "Defense pays 2M per 1,000 HP left on ours — keeping ours alive matters as much as attacking",
+                "Enemy Behemoth at 0 HP burns an Undying stack, dazes 30s, revives; 3 stacks ≈ 4 zeroes to kill",
+             ],
+             "actionable": "Be online for the window — attack their Behemoth in rallies, relocate to the enemy server to help the offense"},
         ],
     },
     "PC": {

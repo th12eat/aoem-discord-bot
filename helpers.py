@@ -22,6 +22,13 @@ def ts_both(dt: datetime) -> str:
     return f"{ts(dt, 'F')} ({ts(dt, 'R')})"
 
 
+def utc_date(dt: datetime) -> str:
+    """Explicit UTC calendar date, e.g. 'Mon Jul 27 (UTC)'. Use for KvK stage
+    dates so a stage starting 00:00 UTC isn't shown as the previous evening in a
+    viewer's local timezone (which a Discord <t:…:D> timestamp would do)."""
+    return dt.astimezone(timezone.utc).strftime("%a %b %-d") + " (UTC)"
+
+
 def has_role(member: discord.Member, role_id: int | None) -> bool:
     if not role_id:
         return False
