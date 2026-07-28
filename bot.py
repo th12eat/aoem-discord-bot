@@ -989,6 +989,12 @@ async def scheduler_tick():
             for offset, when in offsets:
                 target = now + timedelta(minutes=offset)
                 for dt in sched.occurrences_between(e, target, target):
+                    # KvK stage-starts land at 00:00 UTC — the daily-clear tick.
+                    # repost_active_kvk_stages fires the (pinged) stage-start after
+                    # the channel purge, so it owns those. Skip here to avoid the
+                    # double post (and the pre-purge race that wiped the alert).
+                    if is_kvk and dt.hour == 0 and dt.minute == 0:
+                        continue
                     okey = f"{e['id']}|{dt.isoformat()}"
                     fkey = f"{okey}|{offset}"
                     if fkey in _fired:
@@ -1454,6 +1460,7 @@ async def repost_active_kvk_stages(guild: discord.Guild):
     if channel is None:
         return
     now = datetime.now(timezone.utc)
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     for e in store.events_for_guild(guild.id):
         s = e.get("schedule", {})
         if s.get("type") != "kvk":
@@ -1462,6 +1469,8 @@ async def repost_active_kvk_stages(guild: discord.Guild):
             kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
         except (KeyError, ValueError):
             continue
+        scope = e.get("scope", SERVER_SCOPE)
+        role_id = ping_role_id(guild.id, scope)
         stages = kvk.compute_stages(s["short"], kstart)
         # current stage = last one that has started and hasn't ended
         idx = next((i for i in range(len(stages) - 1, -1, -1)
@@ -1469,8 +1478,20 @@ async def repost_active_kvk_stages(guild: discord.Guild):
         if idx is None:
             continue
         stage = stages[idx]
-        parent = f" · {stage['parent']}" if stage.get("parent") else ""
-        header = f"📋 **{s['short']}: {stage['title']}**{parent} — {e['name']} · current stage"
+        # KvK stages are day-aligned, so a stage START always lands at 00:00 UTC —
+        # i.e. on this very daily-clear tick. This post runs *after* the purge (same
+        # coroutine), so it deterministically survives; scheduler_tick therefore
+        # skips midnight KvK starts to avoid a double post. If the stage starts
+        # today we PING it as the stage-start announcement; on interior days of a
+        # multi-day stage we re-post silently just to restore the wiped instructions.
+        starts_today = stage["start"] >= today_midnight
+        if starts_today and role_id:
+            parent = f" · {stage['parent']}" if stage.get("parent") else ""
+            header = (f"<@&{role_id}> **{s['short']}: {stage['title']}**{parent} — "
+                      f"{e['name']} stage starts {ts_both(stage['start'])}")
+        else:
+            parent = f" · {stage['parent']}" if stage.get("parent") else ""
+            header = f"📋 **{s['short']}: {stage['title']}**{parent} — {e['name']} · current stage"
         text = _kvk_stage_body(e, s["short"], stages, idx, header)
         try:
             await channel.send(text)
