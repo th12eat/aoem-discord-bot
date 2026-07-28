@@ -95,7 +95,7 @@ KVK_DEFS = {
         #
         # Trial of Scion: four fixed 30-min windows/day during Beast Taming. Each
         # window's Scion spawns on ONE server. `server` is our best-known default
-        # (mirrors the dashboard: 01:00 & 11:00 on ours, 04:00 & 19:00 on theirs).
+        # (mirrors the dashboard: 01:00 & 13:00 on ours, 07:00 & 19:00 on theirs).
         # We don't know for certain which side hosts the first window until the
         # first Trial actually starts — /event_edit scion_first can flip the whole
         # rotation once it's confirmed in-game.
@@ -104,8 +104,8 @@ KVK_DEFS = {
             "duration": 30,           # minutes per window
             "windows": [
                 {"time": "01:00", "server": "ours"},
-                {"time": "04:00", "server": "theirs"},
-                {"time": "11:00", "server": "ours"},
+                {"time": "07:00", "server": "theirs"},
+                {"time": "13:00", "server": "ours"},
                 {"time": "19:00", "server": "theirs"},
             ],
         },
