@@ -606,6 +606,19 @@ async def legion_status(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
+@bot.tree.command(name="legion_reset", description="Clear all legion slot roles + roster now (same as the Monday auto-reset).")
+async def legion_reset(interaction: discord.Interaction):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can reset legion roles.", ephemeral=True)
+    if not store.legion_config(interaction.guild_id).get("slots"):
+        return await interaction.response.send_message("No legion slots are configured.", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    await purge_legion_roles(interaction.guild)
+    await interaction.followup.send(
+        "🧹 Cleared all legion slot roles + non-discord roster. Refill Thu/Fri with `/legion_fill`.",
+        ephemeral=True)
+
+
 # ── /kvk_add — multi-day, stages auto-derived from a start date ──────────────
 _KVK_CHOICES = [app_commands.Choice(name=lbl, value=k) for k, lbl in kvk.KVK_CHOICES]
 
@@ -1503,6 +1516,11 @@ async def repost_active_kvk_stages(guild: discord.Guild):
 async def daily_clear():
     global _last_clear_date
     today = datetime.now(timezone.utc).date()
+    # The weekly legion roster reset is time-based and idempotent, so it must run
+    # once per ISO week on/after Monday 00:00 UTC even across restarts — it can't
+    # ride the board-clear's restart guard below (which is skipped on every
+    # restart and is in-memory only). Tracked per-guild via a persisted week marker.
+    await run_weekly_legion_purge(today)
     if _last_clear_date == today:
         return
     # first tick after (re)start seeds the marker without clearing, so a restart
@@ -1510,14 +1528,34 @@ async def daily_clear():
     if _last_clear_date is None:
         _last_clear_date = today
         return
-    is_monday = today.weekday() == 0
     _last_clear_date = today
     for guild in bot.guilds:
         roll_series(guild.id)          # advance any series whose day has passed
         purge_completed(guild.id)      # drop events that have fully concluded
-        if is_monday:                  # weekly legion roster reset
-            await purge_legion_roles(guild)
         await clear_board_channel(guild)
+
+
+async def run_weekly_legion_purge(today):
+    """Reset legion slot roles once per ISO week, at/after Monday 00:00 UTC.
+    Persisted per guild as `legion_purge_week` = "<iso_year>-W<iso_week>" so a
+    restart (which resets the in-memory clear marker) never skips or repeats it."""
+    iso = today.isocalendar()  # (year, week, weekday)
+    week_key = f"{iso[0]}-W{iso[1]:02d}"
+    for guild in bot.guilds:
+        cfg = store.guild_config(guild.id)
+        # only guilds that actually run legions (have slots configured)
+        if not store.legion_config(guild.id).get("slots"):
+            continue
+        if cfg.get("legion_purge_week") == week_key:
+            continue  # already reset this week
+        # First time we ever see this guild (no marker): seed the CURRENT week
+        # without purging, so deploying mid-week doesn't nuke a freshly-filled
+        # roster. The reset then fires normally at the next ISO-week rollover.
+        if cfg.get("legion_purge_week") is None:
+            store.set_guild_config(guild.id, legion_purge_week=week_key)
+            continue
+        await purge_legion_roles(guild)
+        store.set_guild_config(guild.id, legion_purge_week=week_key)
 
 
 async def purge_legion_roles(guild: discord.Guild):

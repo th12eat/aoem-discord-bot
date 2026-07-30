@@ -8,10 +8,18 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.7.0"
+VERSION = "1.7.1"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.7.1 — Legion weekly-reset fix**
+• **Fixed:** the Monday 00:00 UTC legion role reset was skipped whenever the bot
+  restarted on a Monday (or wasn't running at the exact rollover), leaving last
+  week's slot roles (e.g. `sat_0100`) tagged on people. The reset now runs once
+  per week reliably across restarts (tracked with a persisted week marker).
+• New **`/legion_reset`** (R4) clears all slot roles + roster on demand — handy to
+  clean up stale tags immediately or between weeks.
 
 **v1.7.0 — Trial of Scion window alerts**
 • **Behemoth Conquest** now pings the **Trial of Scion** windows automatically —
@@ -114,6 +122,7 @@ Pings @eRa8; any alliance's R4 may create/edit these.
 • `/legion_remove` — remove members (discord + non-discord names) from all slots.
 • `/legion_list` — list a slot's members grouped by alliance; filter by `alliance`
   and/or `slot`. Non-discord names are marked ◇.
+• `/legion_reset` — clear all slot roles + roster now (same as the Monday auto-reset).
 Roles + roster auto-empty **Monday 00:00 UTC**; refill Thu/Fri. The bot pings each
 slot **1h before and at start** (40-min window) and the start ping lists the full
 roster (all 4 alliances). Needs **Manage Roles** + the bot's role above the slots.
