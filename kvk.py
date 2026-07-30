@@ -109,6 +109,20 @@ KVK_DEFS = {
                 {"time": "19:00", "server": "theirs"},
             ],
         },
+        # Behemoth invasions during Attack/Defense: each server's Behemoth invades
+        # the other at a locked time (90-min window). Two sides:
+        #   defense = we defend OUR server / OUR Behemoth (enemy invades us)
+        #   attack  = we attack THE OPPONENT server / their Behemoth (our Behemoth invades)
+        # Both servers picked Sat 19:00 → the two windows coincide, so alerts merge
+        # into one "Attack & Defense" ping. Times are on the Attack/Defense stage's
+        # LAST day (the invasion day). Editable via /event_edit inv_atk / inv_def.
+        "invasion": {
+            "stage_key": "ad",        # Attack / Defense stage
+            "duration": 90,           # minutes per invasion window
+            "day": "last",            # invasion falls on the AD stage's last day
+            "attack": "19:00",        # we invade the opponent server
+            "defense": "19:00",       # the opponent invades our server
+        },
         "stages": [
             {"key": "mm", "title": "Matchmaking", "days": 1,
              "summary": "Servers paired — scout & plan (no scoring yet)",
@@ -253,4 +267,47 @@ def scion_windows(short: str, start: datetime, flip: bool = False) -> list[dict]
                 server = "theirs" if server == "ours" else "ours"
             out.append({"start": ws, "end": ws + dur, "server": server, "time": w["time"]})
         day += timedelta(days=1)
+    return sorted(out, key=lambda x: x["start"])
+
+
+def invasion_windows(short: str, start: datetime,
+                     atk_time: str | None = None, def_time: str | None = None) -> list[dict]:
+    """Behemoth invasion windows (Attack/Defense stage), as absolute UTC datetimes.
+
+    Only KvKs with an `invasion` config (Behemoth Conquest) produce windows.
+    Two invasions — `attack` (we invade the opponent) and `defense` (they invade
+    us). When both times coincide they MERGE into one window with kind='both'
+    (defend ours AND attack theirs at once); otherwise two separate windows with
+    kind 'attack' / 'defense'.
+
+    `atk_time` / `def_time` override the configured HH:MM (per-event edit).
+
+    Returns dicts: {start, end, kind ('attack'|'defense'|'both'), time ('HH:MM')}.
+    """
+    defn = KVK_DEFS.get(short, {})
+    cfg = defn.get("invasion")
+    if not cfg:
+        return []
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    stage = next((s for s in compute_stages(short, start) if s["key"] == cfg["stage_key"]), None)
+    if stage is None:
+        return []
+    # invasion day = the AD stage's last day (day before its exclusive end)
+    inv_day = (stage["end"] - timedelta(days=1)).date() if cfg.get("day") == "last" else stage["start"].date()
+    dur = timedelta(minutes=cfg.get("duration", 90))
+    atk = atk_time or cfg["attack"]
+    dfn = def_time or cfg["defense"]
+
+    def _dt(hhmm):
+        h, m = (int(x) for x in hhmm.split(":"))
+        return datetime(inv_day.year, inv_day.month, inv_day.day, h, m, tzinfo=timezone.utc)
+
+    out = []
+    if atk == dfn:
+        ws = _dt(atk)
+        out.append({"start": ws, "end": ws + dur, "kind": "both", "time": atk})
+    else:
+        wsa = _dt(atk); out.append({"start": wsa, "end": wsa + dur, "kind": "attack", "time": atk})
+        wsd = _dt(dfn); out.append({"start": wsd, "end": wsd + dur, "kind": "defense", "time": dfn})
     return sorted(out, key=lambda x: x["start"])

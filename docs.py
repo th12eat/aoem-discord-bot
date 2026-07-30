@@ -8,10 +8,21 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.7.1"
+VERSION = "1.8.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.8.0 — Behemoth invasion alerts**
+• **Behemoth Conquest** now pings the **Attack/Defense invasions** — **1 hour before**
+  and **at** each 90-min window. When both servers pick the same time the windows
+  merge into one **⚔️🛡️ Attack & Defense** alert; otherwise separate ⚔️ Attack /
+  🛡️ Defense pings fire. Each says where to be — **WC1** on both servers (attack +
+  defend), **AGC/REU/MyT** on our server rallying the Elephant — plus how to score.
+• The **Attack/Defense stage-start (Day-4) notice** now lists the locked invasion
+  time(s) and the same who-goes-where plan; invasions also show on the board.
+• Set the times with `/event_edit … inv_atk:HH:MM inv_def:HH:MM` (defaults to the
+  dashboard's Sat 19:00 for both → combined).
 
 **v1.7.1 — Legion weekly-reset fix**
 • **Fixed:** the Monday 00:00 UTC legion role reset was skipped whenever the bot
@@ -135,7 +146,8 @@ Pings that alliance's member role; only its R4 may create/edit.
 **✏️ Manage — _R4 of the event's scope_ (or Manage Server)**
 • `/event_edit` — change an event's name, time, duration, or scope. For **Behemoth
   Conquest**, `scion_first` flips which server hosts the first daily Trial of Scion
-  window. *[scope of the event]*
+  window, and `inv_atk` / `inv_def` set the invasion Attack/Defense times (HH:MM UTC;
+  same time → one combined Attack & Defense alert). *[scope of the event]*
 • `/event_remove` — delete an event. *[scope of the event]*
 
 **👀 Look up — _personal to you_**

@@ -794,7 +794,9 @@ async def event_remove(interaction: discord.Interaction, event: str):
                        datetime_="New UTC date+time YYYY-MM-DDTHH:MM — for one-time/KvK start (optional)",
                        duration="New duration in minutes (optional)",
                        scope="New scope (optional)",
-                       scion_first="Behemoth only: which server hosts the FIRST daily Trial of Scion window")
+                       scion_first="Behemoth only: which server hosts the FIRST daily Trial of Scion window",
+                       inv_atk="Behemoth only: invasion ATTACK time HH:MM UTC (we invade opponent)",
+                       inv_def="Behemoth only: invasion DEFENSE time HH:MM UTC (they invade us)")
 @app_commands.autocomplete(event=_remove_autocomplete)  # same picker: events you may admin
 @app_commands.choices(scope=_SCOPE_CHOICES,
                       scion_first=[app_commands.Choice(name="Our server (#008) — default", value="ours"),
@@ -803,7 +805,8 @@ async def event_edit(interaction: discord.Interaction, event: str,
                      name: str | None = None, time: str | None = None,
                      datetime_: str | None = None, duration: int | None = None,
                      scope: app_commands.Choice[str] | None = None,
-                     scion_first: app_commands.Choice[str] | None = None):
+                     scion_first: app_commands.Choice[str] | None = None,
+                     inv_atk: str | None = None, inv_def: str | None = None):
     ev = next((e for e in store.events_for_guild(interaction.guild_id) if e["id"] == event.strip()), None)
     if ev is None:
         return await interaction.response.send_message("⚠️ No matching event found.", ephemeral=True)
@@ -834,6 +837,18 @@ async def event_edit(interaction: discord.Interaction, event: str,
         # Config default = first window ("01:00") on "ours"; flip when they host first.
         default_first = kvk.KVK_DEFS[ev["schedule"]["short"]]["scion"]["windows"][0]["server"]
         changes["scion_flip"] = (scion_first.value != default_first)
+    for fld, val in (("inv_atk", inv_atk), ("inv_def", inv_def)):
+        if val is None:
+            continue
+        if stype != "kvk" or not kvk.KVK_DEFS.get(ev["schedule"].get("short"), {}).get("invasion"):
+            return await interaction.response.send_message(
+                "⚠️ `inv_atk`/`inv_def` only apply to **Behemoth Conquest** (invasion times).", ephemeral=True)
+        try:
+            h, m = val.split(":"); assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+        except (ValueError, AssertionError):
+            return await interaction.response.send_message(
+                f"⚠️ `{fld}` must be `HH:MM` (24h UTC).", ephemeral=True)
+        changes[fld] = val
     if time:
         # accept one or more comma-separated HH:MM (a series occurrence can have
         # several, e.g. Starfall Vein's four windows)
@@ -869,6 +884,15 @@ async def event_edit(interaction: discord.Interaction, event: str,
     if "scion_flip" in changes:
         host = "opponent server" if scion_first.value == "theirs" else "our server (#008)"
         extra = f" · 🐘 first daily Trial of Scion → **{host}**"
+    if "inv_atk" in changes or "inv_def" in changes:
+        kstart = datetime.fromisoformat(updated["schedule"]["start"]).replace(tzinfo=timezone.utc)
+        wins = kvk.invasion_windows(updated["schedule"]["short"], kstart,
+                                    atk_time=updated.get("inv_atk"), def_time=updated.get("inv_def"))
+        if len(wins) == 1 and wins[0]["kind"] == "both":
+            extra += f" · 🐘 invasion **{wins[0]['time']} UTC** (Attack & Defense combined)"
+        else:
+            parts = [f"{w['kind']} {w['time']}" for w in wins]
+            extra += " · 🐘 invasion → " + ", ".join(parts) + " UTC"
     await interaction.response.send_message(
         f"✏️ Updated **{updated['name']}** (`{updated['id']}`) — {describe_schedule(updated['schedule'])}"
         + (f" · {updated.get('duration')}min" if updated.get('duration') else "") + extra,
@@ -1058,6 +1082,41 @@ async def scheduler_tick():
                         continue
                     _alert_now[okey] = (channel.id, msg.id, w["end"])
 
+            # ── Behemoth invasion windows (Attack/Defense stage) ──
+            #   Each window pings T-1h AND at start; the 1h ping is deleted when the
+            #   start fires, and the start ping self-deletes after the 90-min window.
+            #   Combined (kind='both') fires one Attack & Defense alert.
+            if is_kvk:
+                short = e["schedule"]["short"]
+                kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+                for w in kvk.invasion_windows(short, kstart,
+                                              atk_time=e.get("inv_atk"), def_time=e.get("inv_def")):
+                    for offset, when in ((60, "in 1 hour"), (0, "starting now")):
+                        if w["start"] - timedelta(minutes=offset) != now:
+                            continue
+                        okey = f"inv|{e['id']}|{w['kind']}|{w['start'].isoformat()}"
+                        fkey = f"{okey}|{offset}"
+                        if fkey in _fired:
+                            continue
+                        _fired.add(fkey)
+                        text = _invasion_alert_text(e, role_id, w, when)
+                        try:
+                            msg = await channel.send(text)
+                        except discord.DiscordException as ex:
+                            log.error("invasion alert send failed: %s", ex)
+                            continue
+                        if offset == 60:
+                            _alert_1h[okey] = msg.id
+                        else:
+                            old = _alert_1h.pop(okey, None)
+                            if old:
+                                try:
+                                    m = await channel.fetch_message(old)
+                                    await m.delete()
+                                except discord.DiscordException:
+                                    pass
+                            _alert_now[okey] = (channel.id, msg.id, w["end"])
+
         # ── legion slot pings (server-wide, WC↔BoD alternating) ──
         #   Same lifecycle as normal events: T-1h + at-start; the 1h alert is
         #   deleted when start fires, and the start alert self-deletes after the
@@ -1126,6 +1185,24 @@ def _kvk_stage_body(e, short, stages, idx, header):
     if stage.get("scoring"):
         lines.append("\n**How to score today:**")
         lines += [f"• {m}" for m in stage["scoring"]]
+    # Attack/Defense stage: spell out the locked invasion time(s) + who goes where,
+    # so the stage-start (Day-4) notice tells everyone the plan up front.
+    inv_cfg = kvk.KVK_DEFS.get(short, {}).get("invasion")
+    if inv_cfg and stage.get("key") == inv_cfg.get("stage_key"):
+        try:
+            kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+            wins = kvk.invasion_windows(short, kstart, atk_time=e.get("inv_atk"), def_time=e.get("inv_def"))
+        except (ValueError, KeyError):
+            wins = []
+        if wins:
+            lines.append("\n**🐘 Invasion window" + ("s" if len(wins) > 1 else "") + ":**")
+            for w in wins:
+                label = {"both": "Attack **&** Defense (combined)",
+                         "attack": "Attack (invade opponent)",
+                         "defense": "Defense (they invade us)"}[w["kind"]]
+                lines.append(f"• {label} — {ts_both(w['start'])} · 90 min")
+            lines.append(f"**Where to be:** {_INVASION_ROLES}")
+            lines.append("_Alerts fire 1 hour before and at each window._")
     if stage.get("actionable"):
         lines.append(f"\n▸ {stage['actionable']}")
     if stage.get("prep"):
@@ -1170,6 +1247,48 @@ def _scion_alert_text(e, role_id, w):
     if w["server"] == "theirs":
         lines.append("⚠️ On **the opponent server** — expect PvP; watch for cross-border tiles (zeroing risk).")
     lines.append(f"⏳ Window closes {ts(w['end'], 'R')}.")
+    return "\n".join(lines)
+
+
+# Where each alliance goes during a Behemoth invasion: WC1 splits to both servers;
+# everyone else stays on our server on the Elephant. Kept here so the wording is
+# consistent across the 1h-before ping, the at-time ping, and the stage notice.
+_INVASION_ROLES = ("**WC1** takes both servers (attack **and** defend); "
+                   "**AGC / REU / MyT** stay on **our server** rallying the Elephant.")
+
+
+def _invasion_alert_text(e, role_id, w, when):
+    """A Behemoth invasion ping. `w` is a window dict from kvk.invasion_windows();
+    `when` is 'in 1 hour' or 'starting now'. Combined windows (kind='both') fire a
+    single Attack & Defense message instead of separate offense/defense ones."""
+    dur = int((w["end"] - w["start"]).total_seconds() // 60)
+    kind = w["kind"]
+    live = when == "starting now"
+    head_state = "LIVE now" if live else f"in 1 hour ({ts(w['start'], 't')})"
+    if kind == "both":
+        title = f"🐘⚔️🛡️ **Behemoth Invasion — ATTACK & DEFENSE {head_state}**"
+        gist = ("Both invasions hit at once (90 min): the enemy Behemoth invades **our server** "
+                "while our Behemoth invades **theirs**.")
+    elif kind == "attack":
+        title = f"🐘⚔️ **Behemoth Invasion — ATTACK {head_state}**"
+        gist = "Our Behemoth invades **the opponent server** (90 min) — go rally it down."
+    else:  # defense
+        title = f"🐘🛡️ **Behemoth Invasion — DEFENSE {head_state}**"
+        gist = "The enemy Behemoth invades **our server** (90 min) — keep ours alive and zero theirs."
+    lines = [
+        f"<@&{role_id}> {title} — {ts_both(w['start'])}",
+        f"_{gist}_",
+        f"**Where to be:** {_INVASION_ROLES}",
+    ]
+    if live:
+        lines += [
+            "**How to score:** only **rallies** damage a Behemoth (1,000/sec each — hold them long; "
+            "after 5 min dmg ramps). A depleted Undying stack = **1B**, the kill = **5B**; "
+            "keeping ours alive pays **2M per 1,000 HP** left at the end.",
+            f"⏳ Window closes {ts(w['end'], 'R')}.",
+        ]
+    else:
+        lines.append("Pre-position now: relocate/teleport, top up rally troops, line up rally leaders.")
     return "\n".join(lines)
 
 
@@ -1364,6 +1483,24 @@ def _scion_board_rows(events: list[dict], start: datetime, end: datetime) -> lis
     return rows
 
 
+def _invasion_board_rows(events: list[dict], start: datetime, end: datetime) -> list[str]:
+    """Behemoth invasion windows (Attack/Defense) within [start,end]."""
+    rows = []
+    for e in events:
+        s = e.get("schedule", {})
+        if s.get("type") != "kvk":
+            continue
+        try:
+            kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
+        except (ValueError, KeyError):
+            continue
+        for w in kvk.invasion_windows(s["short"], kstart, atk_time=e.get("inv_atk"), def_time=e.get("inv_def")):
+            if start <= w["start"] <= end:
+                label = {"both": "Attack & Defense", "attack": "Attack", "defense": "Defense"}[w["kind"]]
+                rows.append(f"• {ts(w['start'],'t')} — 🐘 **Behemoth Invasion** · {label} ({ts(w['start'],'R')})")
+    return rows
+
+
 # ── board channel: server-wide events only (alliance events via the button) ──
 async def refresh_board(guild: discord.Guild):
     cfg = store.guild_config(guild.id)
@@ -1389,6 +1526,8 @@ async def refresh_board(guild: discord.Guild):
         rows += _legion_board_rows(guild.id, start, end)
         # Trial of Scion windows (Behemoth Conquest, during Beast Taming)
         rows += _scion_board_rows(evs, start, end)
+        # Behemoth invasion windows (Attack/Defense)
+        rows += _invasion_board_rows(evs, start, end)
         if not rows:
             return f"__{title}__\n*(none)*"
         return f"__{title}__\n" + "\n".join(rows)
