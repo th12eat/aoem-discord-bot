@@ -1288,7 +1288,7 @@ def _invasion_alert_text(e, role_id, w, when):
             f"⏳ Window closes {ts(w['end'], 'R')}.",
         ]
     else:
-        lines.append("Pre-position now: relocate/teleport, top up rally troops, line up rally leaders.")
+        lines.append("Get ready — do **NOT** pre-position on the enemy server before the window opens (anyone who does is removed at event start). Top up rally troops and line up rally leaders on our side.")
     return "\n".join(lines)
 
 
