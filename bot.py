@@ -49,7 +49,7 @@ import os
 import re
 import uuid
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -668,6 +668,38 @@ def _tme_skip_predicate(guild_id: int):
     return skip
 
 
+def _rotation_times_for(guild_id: int, name: str, occ: date) -> list[str]:
+    """Materialized fire-times for a rotating (or City-Clash-glued) series'
+    occurrence on `occ`, computed from the stored anchor. Empty list if the series
+    doesn't rotate or hasn't been seeded yet (→ stays TBD, no ping).
+
+    A `glue` series (Imperial Showdown) borrows the target's (City Clash's) anchor
+    and computes the target's slot for the weekend it shares — the Saturday before
+    a Sunday occurrence. This reads the anchor, NOT City Clash's live rolled-forward
+    schedule, so it can't pick up next week's slot by accident."""
+    d = catalog.SERIES.get(name, {})
+    glue = d.get("glue")
+    if glue:
+        anc = store.rotation_anchor(guild_id, glue)
+        if not anc:
+            return []
+        gdays = set(catalog.SERIES.get(glue, {}).get("days", []))
+        # the glued target's occurrence for this weekend: the latest target-weekday
+        # on or before our occurrence date (e.g. City Clash Saturday before Sunday).
+        tgt = occ
+        for _ in range(7):
+            if tgt.weekday() in gdays:
+                break
+            tgt -= timedelta(days=1)
+        return series_mod.rotation_times(glue, date.fromisoformat(anc["date"]), anc["idx"], tgt)
+    if d.get("rotates"):
+        anc = store.rotation_anchor(guild_id, name)
+        if not anc:
+            return []
+        return series_mod.rotation_times(name, date.fromisoformat(anc["date"]), anc["idx"], occ)
+    return []
+
+
 def _seed_series_event(guild_id: int, name: str) -> dict | None:
     """Create the next occurrence of a series (if not already present). Returns
     the event, or None if no future date could be computed."""
@@ -677,8 +709,13 @@ def _seed_series_event(guild_id: int, name: str) -> dict | None:
     nxt = series_mod.next_date(name, today - timedelta(days=1), skip=skip)
     if not nxt:
         return None
+    sched = series_mod.make_occurrence(name, nxt)
+    # rotating/glued series materialize their time from the anchor (if seeded)
+    rot = _rotation_times_for(guild_id, name, nxt)
+    if rot:
+        sched["times"] = rot
     ev = {"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id), "name": name,
-          "scope": SERVER_SCOPE, "schedule": series_mod.make_occurrence(name, nxt),
+          "scope": SERVER_SCOPE, "schedule": sched,
           "duration": catalog.SERIES[name].get("duration", 60), "series_auto": True,
           "created_by": "system"}
     store.add_event(ev)
@@ -710,6 +747,90 @@ async def series_setup(interaction: discord.Interaction):
     await refresh_board(interaction.guild)
 
 
+def _anchor_series(guild_id: int, name: str, hhmm: str) -> tuple[str, int, str]:
+    """Anchor a rotating series to `hhmm` for its current-week occurrence, persist
+    the anchor, auto-create the event if missing, and materialize this week's time
+    so it pings. Returns (occ_date_iso, pool_idx, human_line)."""
+    idx = catalog.ROTATION_POOL.index(hhmm)  # caller validated membership
+    skip = _tme_skip_predicate(guild_id) if catalog.SERIES.get(name, {}).get("skipTme") else None
+    today = datetime.now(timezone.utc).date()
+    d0 = series_mod.next_date(name, today - timedelta(days=1), skip=skip)
+    store.set_rotation_anchor(guild_id, name, d0.isoformat(), idx)
+    # attach to the live event (create it if /series_setup wasn't run first)
+    ev = next((e for e in store.events_for_guild(guild_id)
+               if e.get("schedule", {}).get("type") == "series" and e["schedule"].get("series") == name), None)
+    if ev is None:
+        ev = _seed_series_event(guild_id, name)
+    else:
+        occ = date.fromisoformat(ev["schedule"]["date"])
+        store.update_event(ev["id"], guild_id,
+                           {"schedule": {"times": _rotation_times_for(guild_id, name, occ)}})
+    return d0.isoformat(), idx, f"**{name}** — {d0.isoformat()} at {hhmm} UTC"
+
+
+def _valid_pool_time(hhmm: str) -> bool:
+    return hhmm in catalog.ROTATION_POOL
+
+
+@bot.tree.command(name="rotation_seed",
+                  description="Seed this week's rotating event times (01/04/11/19 UTC pool); they auto-advance after.")
+@app_commands.describe(city_clash="City Clash (Sat) time this week — HH:MM UTC from 01/04/11/19",
+                       world_campaign_wed="World Campaign this Wednesday — HH:MM UTC",
+                       world_campaign_sun="World Campaign this Sunday — HH:MM UTC (next slot after Wed)",
+                       treasure_hunt="Treasure Hunt (Thu) time this week — HH:MM UTC")
+async def rotation_seed(interaction: discord.Interaction,
+                        city_clash: str, world_campaign_wed: str,
+                        world_campaign_sun: str, treasure_hunt: str):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can seed the rotation.", ephemeral=True)
+    entered = {"city_clash": city_clash, "world_campaign_wed": world_campaign_wed,
+               "world_campaign_sun": world_campaign_sun, "treasure_hunt": treasure_hunt}
+    bad = [f"`{k}`={v}" for k, v in entered.items() if not _valid_pool_time(v.strip())]
+    if bad:
+        return await interaction.response.send_message(
+            "⚠️ Times must be one of **01:00 / 04:00 / 11:00 / 19:00** (UTC). Bad: " + ", ".join(bad),
+            ephemeral=True)
+    gid = interaction.guild_id
+    # World Campaign: one anchor (its Wednesday), but validate the Sunday the R4
+    # typed matches the next pool slot — catches a mistyped time before it rotates
+    # wrong for weeks.
+    skip = None  # WC never skips
+    wc_wed_date = series_mod.next_date("World Campaign", datetime.now(timezone.utc).date() - timedelta(days=1), skip=skip)
+    # this week's Sunday for WC = the next WC-weekday strictly after the Wednesday
+    wc_sun_date = series_mod.next_date("World Campaign", wc_wed_date, skip=skip)
+    exp_sun_idx = series_mod.rotation_slot("World Campaign",
+                                           wc_wed_date, catalog.ROTATION_POOL.index(world_campaign_wed.strip()),
+                                           wc_sun_date)
+    if catalog.ROTATION_POOL[exp_sun_idx] != world_campaign_sun.strip():
+        return await interaction.response.send_message(
+            f"⚠️ World Campaign Sunday should be **{catalog.ROTATION_POOL[exp_sun_idx]}** "
+            f"(the next slot after Wed {world_campaign_wed.strip()}), not {world_campaign_sun.strip()}. "
+            "Check the times.", ephemeral=True)
+
+    lines = []
+    for name, hhmm in (("City Clash", city_clash.strip()),
+                       ("World Campaign", world_campaign_wed.strip()),
+                       ("Treasure Hunt", treasure_hunt.strip())):
+        _, _, line = _anchor_series(gid, name, hhmm)
+        lines.append(line)
+    # Imperial Showdown borrows City Clash's anchor — nothing to seed, but ensure
+    # its event exists and reflects the glued time.
+    is_ev = next((e for e in store.events_for_guild(gid)
+                  if e.get("schedule", {}).get("type") == "series" and e["schedule"].get("series") == "Imperial Showdown"), None)
+    if is_ev is None:
+        is_ev = _seed_series_event(gid, "Imperial Showdown")
+    else:
+        occ = date.fromisoformat(is_ev["schedule"]["date"])
+        store.update_event(is_ev["id"], gid,
+                           {"schedule": {"times": _rotation_times_for(gid, "Imperial Showdown", occ)}})
+    lines.append("**Imperial Showdown** — follows City Clash's slot each weekend")
+
+    await interaction.response.send_message(
+        "✅ Rotation seeded (auto-advances 01→04→11→19 each occurrence):\n"
+        + "\n".join(f"• {ln}" for ln in lines), ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
 # ── display label for a specific occurrence ──────────────────────────────────
 def occ_name(e: dict, dt: datetime) -> str:
     """Legible name for an event AT a specific fire-time. KvK occurrences name the
@@ -721,6 +842,12 @@ def occ_name(e: dict, dt: datetime) -> str:
             return kvk.occurrence_label(s["short"], kstart, dt)
         except (KeyError, ValueError):
             pass
+    # season series (Starfall Vein) show their week number within the 12-week run
+    if s.get("type") == "series":
+        wk = series_mod.starfall_week(s.get("series", e["name"]), dt.date())
+        if wk is not None:
+            weeks = catalog.SERIES.get(s.get("series", ""), {}).get("season", {}).get("weeks", "?")
+            return f"{e['name']} · Week {wk}/{weeks}"
     return e["name"]
 
 
@@ -1748,8 +1875,14 @@ def roll_series(guild_id: int):
         nxt = series_mod.next_date(name, today - timedelta(days=1), skip=skip)
         if not nxt:
             continue
-        store.update_event(e["id"], guild_id,
-                           {"schedule": series_mod.make_occurrence(name, nxt)})
+        sched = series_mod.make_occurrence(name, nxt)
+        # rotating/glued series recompute their fire time from the anchor for the
+        # new date (pure function of date → self-heals even if a rollover was
+        # missed while the bot was down).
+        rot = _rotation_times_for(guild_id, name, nxt)
+        if rot:
+            sched["times"] = rot
+        store.update_event(e["id"], guild_id, {"schedule": sched})
 
 
 @bot.command(name="ping")

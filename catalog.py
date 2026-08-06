@@ -22,17 +22,37 @@ SERVER_EVENTS = [
 #   skipTme    : skip any occurrence that lands on a TME invasion day (Imperial
 #                Showdown only — it runs the Sundays that don't clash with TME).
 #   duration   : minutes (World Campaign is a 4-hour window).
+#   rotates    : True → the fire time cycles through ROTATION_POOL, +1 slot per
+#                occurrence (see series.rotation_times). Auto-pings once an R4 has
+#                seeded the per-guild anchor via /rotation_seed. `fixed` stays
+#                False for these (their time changes every occurrence, not weekly).
+#   glue       : name of another (rotating) series whose current pool slot this
+#                event borrows instead of holding its own anchor (Imperial Showdown
+#                follows City Clash). The glued event reads the target's anchor and
+#                computes the slot for its own occurrence's weekend.
+#   season     : {anchor, weeks} for events that run in fixed back-to-back seasons;
+#                used to show "Week N/weeks" (Starfall Vein). Auto-wraps forever.
+
+# Rotating events cycle their UTC start time through this pool, one slot per
+# occurrence, wrapping. World Campaign (Wed+Sun) advances twice a week; the
+# once-weekly series advance once. Imperial Showdown mirrors City Clash's slot.
+ROTATION_POOL = ["01:00", "04:00", "11:00", "19:00"]
+
 SERIES = {
     "Imperial Showdown": {"days": [6], "fixed": False, "skipTme": True,
-                          "note": "Every Sunday except TME weeks"},
-    "City Clash":        {"days": [5], "fixed": False,
-                          "note": "Every Saturday"},
-    "World Campaign":    {"days": [2, 6], "fixed": False, "duration": 240,
-                          "note": "Every Wednesday & Sunday (4h)"},
+                          "glue": "City Clash",
+                          "note": "Every Sunday except TME weeks · time follows City Clash"},
+    "City Clash":        {"days": [5], "fixed": False, "rotates": True,
+                          "note": "Every Saturday · rotating time (01/04/11/19 UTC)"},
+    "World Campaign":    {"days": [2, 6], "fixed": False, "rotates": True, "duration": 240,
+                          "note": "Every Wednesday & Sunday (4h) · rotating time (01/04/11/19 UTC)"},
+    "Treasure Hunt":     {"days": [3], "fixed": False, "rotates": True,
+                          "note": "Every Thursday · rotating time (01/04/11/19 UTC)"},
     "Starfall Vein":     {"days": [2], "fixed": True,
                           "fixedTimes": ["02:00", "05:00", "12:00", "20:00"],
                           "duration": 35,
-                          "note": "Every Wednesday · fixed times 02/05/12/20 UTC (35 min each)"},
+                          "season": {"anchor": "2026-07-29", "weeks": 12},
+                          "note": "Every Wednesday · fixed times 02/05/12/20 UTC (35 min each) · 12-week season"},
 }
 
 # Alliance leadership actionable events (specific date/time).

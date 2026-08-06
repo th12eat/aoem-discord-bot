@@ -59,3 +59,52 @@ def make_occurrence(name: str, on: date) -> dict:
     """A series schedule for the given date, with default (possibly empty) times."""
     return {"type": "series", "series": name, "date": on.isoformat(),
             "times": default_times(name)}
+
+
+# ── rotating time pool ────────────────────────────────────────────────────────
+# Some series cycle their fire time through catalog.ROTATION_POOL, advancing one
+# slot per occurrence (wrapping). The slot for any occurrence is a pure function
+# of an immutable anchor {date, idx} — "the occurrence on `date` used pool[idx]" —
+# so it never desyncs across restarts or missed rollovers (unlike a stored
+# counter). World Campaign lands on two weekdays, so it advances twice a week.
+def occ_count(days: set[int], anchor: date, target: date) -> int:
+    """Number of series-weekday dates d with anchor < d <= target (anchor
+    EXCLUSIVE, target INCLUSIVE), so occ_count(days, anchor, anchor) == 0 and the
+    anchor occurrence itself is index 0."""
+    if target <= anchor:
+        return 0
+    n = 0
+    d = anchor + timedelta(days=1)
+    while d <= target:
+        if d.weekday() in days:
+            n += 1
+        d += timedelta(days=1)
+    return n
+
+
+def rotation_slot(name: str, anchor_date: date, anchor_idx: int, target: date) -> int:
+    """Pool index for `name`'s occurrence on `target`, given its anchor."""
+    d = catalog.SERIES.get(name, {})
+    days = set(d.get("days", []))
+    pool = catalog.ROTATION_POOL
+    return (anchor_idx + occ_count(days, anchor_date, target)) % len(pool)
+
+
+def rotation_times(name: str, anchor_date: date, anchor_idx: int, target: date) -> list[str]:
+    """Materialized [HH:MM] for `name`'s occurrence on `target` (single time)."""
+    return [catalog.ROTATION_POOL[rotation_slot(name, anchor_date, anchor_idx, target)]]
+
+
+def starfall_week(name: str, occ: date) -> int | None:
+    """1-based week number within a series' fixed season (auto-wrapping), from its
+    `season` {anchor, weeks}. E.g. Starfall Vein week 1..12 then back to 1.
+    Returns None if the series has no season metadata."""
+    season = catalog.SERIES.get(name, {}).get("season")
+    if not season:
+        return None
+    try:
+        anchor = date.fromisoformat(season["anchor"])
+        weeks = int(season["weeks"])
+    except (KeyError, ValueError):
+        return None
+    return ((occ - anchor).days // 7) % weeks + 1

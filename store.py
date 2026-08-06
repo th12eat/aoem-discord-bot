@@ -176,6 +176,29 @@ def clear_legion_seed(guild_id: int) -> bool:
         return had
 
 
+# ── rotating-series anchors ───────────────────────────────────────────────────
+# shape under a guild:  "rotation": { "anchors": {
+#     "City Clash": {"date": "2026-08-08", "idx": 2}, ...   # date + pool index
+#   } }
+# An anchor means "the occurrence on `date` used ROTATION_POOL[idx]"; every other
+# occurrence's slot is computed from it (see series.rotation_times), so it's
+# immutable and restart-safe. Set by /rotation_seed with a week's real timings.
+def set_rotation_anchor(guild_id: int, name: str, anchor_date: str, idx: int) -> dict:
+    """Store (or overwrite) the pool anchor for a rotating series."""
+    with _lock:
+        cfg = load_config()
+        g = cfg["guilds"].setdefault(str(guild_id), {})
+        anchors = g.setdefault("rotation", {}).setdefault("anchors", {})
+        anchors[name] = {"date": anchor_date, "idx": idx}
+        _write(CONFIG_PATH, cfg)
+        return anchors[name]
+
+
+def rotation_anchor(guild_id: int, name: str) -> dict:
+    """The stored {date, idx} anchor for a rotating series (empty if unseeded)."""
+    return guild_config(guild_id).get("rotation", {}).get("anchors", {}).get(name, {})
+
+
 # ── events ───────────────────────────────────────────────────────────────────
 # shape: { "events": [ {id, guild_id, name, schedule{...}, created_by} ] }
 def load_events() -> list[dict]:

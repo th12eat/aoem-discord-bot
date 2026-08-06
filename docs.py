@@ -8,10 +8,21 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.8.0"
+VERSION = "1.9.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.9.0 — Rotating event times + Starfall week counter**
+• **World Campaign, City Clash, Imperial Showdown & Treasure Hunt** now cycle
+  their start time through the **01:00 / 04:00 / 11:00 / 19:00 UTC** pool, one slot
+  per occurrence. Seed this week's real times **once** with **`/rotation_seed`** and
+  they **auto-advance and auto-ping** every week after — no more editing each week.
+• **World Campaign** (Wed+Sun) advances twice a week; **Imperial Showdown** follows
+  **City Clash's** slot each weekend. **Treasure Hunt** is now a weekly Thursday series.
+• An R4 can still override any single week with `/event_edit … time:HH:MM`.
+• **Starfall Vein** now shows its **· Week N/12** within the 12-week season
+  (auto-wraps 12→1), on the board and in every alert/list.
 
 **v1.8.0 — Behemoth invasion alerts**
 • **Behemoth Conquest** now pings the **Attack/Defense invasions** — **1 hour before**
@@ -120,7 +131,10 @@ Pings @eRa8; any alliance's R4 may create/edit these.
 • `/event_add` (scope: Server-wide) — recurring/one-time server event (+ duration). *[Server]*
 • `/kvk_add` — multi-day KvK (TME/GE/BC/PC/DD); stages auto-derived from the start date. *[Server]*
 • `/series_setup` — seed the rolling weekly events (Imperial Showdown, City Clash,
-  World Campaign, Starfall Vein). Run once; they auto-advance each week. *[Server]*
+  World Campaign, Treasure Hunt, Starfall Vein). Run once; they auto-advance each week. *[Server]*
+• `/rotation_seed` — set **this week's** rotating times (City Clash, World Campaign
+  Wed+Sun, Treasure Hunt) from the 01/04/11/19 UTC pool. They then auto-advance one
+  slot per occurrence and auto-ping; Imperial Showdown follows City Clash. *[Server]*
 
 **⚔️ Legions (Wonder Contest / Battle of Dawn) — _any R4_, server-wide**
 • `/legion_slot` — bind a ping role to a time-slot (Sat/Sun × 01:00/11:00/19:00 UTC).
@@ -159,10 +173,15 @@ Completed events never appear.
 
 **🔁 Weekly series (rolling)**
 Seeded by `/series_setup`; each shows the **next** date and advances automatically:
-• **Imperial Showdown** — Sundays, except TME weeks. • **City Clash** — Saturdays.
-• **World Campaign** — Wednesdays & Sundays (4h). • **Starfall Vein** — Wednesdays (fixed times).
-Most have a **variable time**: they appear on the board as "time TBD" and **won't
-ping** until an R4 sets the time with `/event_edit` (Starfall pings automatically).
+• **Imperial Showdown** — Sundays, except TME weeks (time follows City Clash).
+• **City Clash** — Saturdays. • **World Campaign** — Wednesdays & Sundays (4h).
+• **Treasure Hunt** — Thursdays. • **Starfall Vein** — Wednesdays (fixed times).
+**Rotating-time series** (City Clash, World Campaign, Treasure Hunt, Imperial
+Showdown) cycle through **01/04/11/19 UTC**, one slot per occurrence — seed the
+current week once with `/rotation_seed` and they auto-advance and **ping on their
+own** thereafter (an R4 can still override a single week with `/event_edit`).
+**Starfall Vein** pings on its fixed windows and shows its **· Week N/12** in the
+12-week season.
 
 **ℹ️ Notes**
 • **World Campaign** runs **4 hours** — its events default to a 4h window.
