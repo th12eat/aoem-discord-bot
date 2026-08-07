@@ -32,6 +32,11 @@ SERVER_EVENTS = [
 #                computes the slot for its own occurrence's weekend.
 #   season     : {anchor, weeks} for events that run in fixed back-to-back seasons;
 #                used to show "Week N/weeks" (Starfall Vein). Auto-wraps forever.
+#   ddForce    : HH:MM the fire time is FORCED to on any week our server runs
+#                Desolate Desert (Treasure Hunt → "04:00"). The rotation pointer
+#                still advances underneath (the DD occurrence consumes its slot);
+#                only the displayed/pinged time is overridden. So the week after a
+#                DD week resumes as if nothing happened.
 
 # Rotating events cycle their UTC start time through this pool, one slot per
 # occurrence, wrapping. World Campaign (Wed+Sun) advances twice a week; the
@@ -46,13 +51,25 @@ SERIES = {
                           "note": "Every Saturday · rotating time (01/04/11/19 UTC)"},
     "World Campaign":    {"days": [2, 6], "fixed": False, "rotates": True, "duration": 240,
                           "note": "Every Wednesday & Sunday (4h) · rotating time (01/04/11/19 UTC)"},
-    "Treasure Hunt":     {"days": [3], "fixed": False, "rotates": True,
-                          "note": "Every Thursday · rotating time (01/04/11/19 UTC)"},
+    "Treasure Hunt":     {"days": [3], "fixed": False, "rotates": True, "ddForce": "04:00",
+                          "note": "Every Thursday · rotating time (01/04/11/19 UTC); forced 04:00 on DD weeks"},
     "Starfall Vein":     {"days": [2], "fixed": True,
                           "fixedTimes": ["02:00", "05:00", "12:00", "20:00"],
                           "duration": 35,
                           "season": {"anchor": "2026-07-29", "weeks": 12},
                           "note": "Every Wednesday · fixed times 02/05/12/20 UTC (35 min each) · 12-week season"},
+}
+
+# Every-N-week recurring windows (fixed cadence, multi-day span). Modeled as an
+# `everynweek` schedule anchored to a first-occurrence date; the multi-day window
+# is a single start-day ping whose `duration` (minutes) covers the span, so the
+# "running now" alert self-clears at the end. day = weekday (Mon=0 … Sun=6).
+# NOTE: day/duration are TENTATIVE pending in-game confirmation — tune here.
+#   2 days = 2880 min · 3 days = 4320 min. times ["TBD"] → no ping until an R4
+#   sets the real start time via /event_edit (matches the series TBD convention).
+NWEEK_EVENTS = {
+    "Marauder's Hunt": {"interval_weeks": 2, "day": 1, "times": ["TBD"], "duration": 2880},  # Tue, 2-day (tentative)
+    "Warrior's Trial": {"interval_weeks": 4, "day": 1, "times": ["TBD"], "duration": 4320},  # Tue, 3-day (tentative)
 }
 
 # Alliance leadership actionable events (specific date/time).

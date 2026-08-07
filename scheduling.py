@@ -69,7 +69,7 @@ def occurrences_between(event: dict, start: datetime, end: datetime) -> list[dat
 
     # anchored variants: fire relative to an anchor date
     anchor_date = None
-    if stype in ("everyother", "everyotherweek"):
+    if stype in ("everyother", "everyotherweek", "everynweek"):
         anchor_date = datetime.fromisoformat(sched["anchor"]).date()
 
     day = start.date()
@@ -86,6 +86,12 @@ def occurrences_between(event: dict, start: datetime, end: datetime) -> list[dat
             # every 14 days from the anchor's week, on the listed weekday(s)
             delta = (day - anchor_date).days
             fires = delta >= 0 and (delta // 7) % 2 == 0 and (not days or wd in days)
+        elif stype == "everynweek":
+            # every N weeks from the anchor's week, on the listed weekday(s).
+            # everyotherweek is the N==2 case; N clamped ≥1 to avoid div-by-zero.
+            n = max(1, int(sched.get("interval_weeks", 2)))
+            delta = (day - anchor_date).days
+            fires = delta >= 0 and (delta // 7) % n == 0 and (not days or wd in days)
         # stype == "daily" → fires every day
         if fires:
             for h, m in times:

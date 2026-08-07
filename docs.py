@@ -8,10 +8,20 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.9.0"
+VERSION = "1.10.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.10.0 — Treasure Hunt DD rule + biweekly/monthly windows**
+• **Treasure Hunt** is now forced to **04:00** on any week our server runs
+  **Desolate Desert** — the rotation keeps counting underneath, so the week after
+  DD resumes the 01/04/11/19 cycle right where it would have been. Adding a DD via
+  `/kvk_add` flips that week's Treasure Hunt to 04:00 immediately.
+• **Marauder's Hunt** (every **2 weeks**) and **Warrior's Trial** (every **4 weeks**)
+  added as recurring multi-day windows (Tuesday start — day/length tentative).
+  Seed them with **`/nweek_setup`** giving each one's first-occurrence date; set the
+  start time with `/event_edit … time:HH:MM` (they stay TBD/no-ping until you do).
 
 **v1.9.0 — Rotating event times + Starfall week counter**
 • **World Campaign, City Clash, Imperial Showdown & Treasure Hunt** now cycle
@@ -134,7 +144,11 @@ Pings @eRa8; any alliance's R4 may create/edit these.
   World Campaign, Treasure Hunt, Starfall Vein). Run once; they auto-advance each week. *[Server]*
 • `/rotation_seed` — set **this week's** rotating times (City Clash, World Campaign
   Wed+Sun, Treasure Hunt) from the 01/04/11/19 UTC pool. They then auto-advance one
-  slot per occurrence and auto-ping; Imperial Showdown follows City Clash. *[Server]*
+  slot per occurrence and auto-ping; Imperial Showdown follows City Clash. Treasure
+  Hunt is forced to 04:00 on DD weeks (cycle continues underneath). *[Server]*
+• `/nweek_setup` — seed the every-N-week windows: **Marauder's Hunt** (2 wks) and
+  **Warrior's Trial** (4 wks), each from its first-occurrence date. Set the start
+  time afterward with `/event_edit`. *[Server]*
 
 **⚔️ Legions (Wonder Contest / Battle of Dawn) — _any R4_, server-wide**
 • `/legion_slot` — bind a ping role to a time-slot (Sat/Sun × 01:00/11:00/19:00 UTC).
@@ -181,7 +195,14 @@ Showdown) cycle through **01/04/11/19 UTC**, one slot per occurrence — seed th
 current week once with `/rotation_seed` and they auto-advance and **ping on their
 own** thereafter (an R4 can still override a single week with `/event_edit`).
 **Starfall Vein** pings on its fixed windows and shows its **· Week N/12** in the
-12-week season.
+12-week season. **Treasure Hunt** is forced to **04:00 on weeks our server runs
+Desolate Desert** — the rotation keeps counting, so the next week resumes the cycle.
+
+**🗓️ Every-N-week windows**
+Seeded by `/nweek_setup` (first-occurrence date each): **Marauder's Hunt** every
+**2 weeks**, **Warrior's Trial** every **4 weeks** — recurring multi-day windows
+(Tuesday start; length tentative). They show TBD and **don't ping** until an R4
+sets the start time with `/event_edit … time:HH:MM`.
 
 **ℹ️ Notes**
 • **World Campaign** runs **4 hours** — its events default to a 4h window.

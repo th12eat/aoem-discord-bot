@@ -106,6 +106,11 @@ def describe_schedule(schedule: dict) -> str:
     if t == "everyotherweek":
         days = "/".join(names[d] for d in schedule.get("days", []))
         return f"every other week · {days} · {times} UTC (from {schedule.get('anchor','?')})"
+    if t == "everynweek":
+        days = "/".join(names[d] for d in schedule.get("days", []))
+        n = schedule.get("interval_weeks", 2)
+        when = f"{times} UTC" if times and "TBD" not in schedule.get("times", []) else "time TBD (no ping until set)"
+        return f"every {n} weeks · {days} · {when} (from {schedule.get('anchor','?')})"
     if t == "kvk":
         return f"multi-day KvK · starts {schedule.get('start','?')}"
     if t == "series":

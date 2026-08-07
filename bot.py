@@ -640,6 +640,10 @@ async def kvk_add(interaction: discord.Interaction, event: app_commands.Choice[s
     preview = "\n".join(f"• {s['title']} — {utc_date(s['start'])}" for s in stages)
     # KvK bypasses duplicate-time check (stage-based); add directly.
     store.add_event(ev)
+    # Adding a DD run may force this week's Treasure Hunt to 04:00 — re-materialize
+    # its time now so it flips immediately rather than at the next rollover.
+    if short == "DD":
+        _refresh_ddforce_series(interaction.guild_id)
     await interaction.response.send_message(
         f"✅ Added **{name}** (`{ev['id']}`) — {len(stages)} stages:\n{preview}", ephemeral=True)
     await refresh_board(interaction.guild)
@@ -668,6 +672,23 @@ def _tme_skip_predicate(guild_id: int):
     return skip
 
 
+def _dd_week(guild_id: int, d: date) -> bool:
+    """True if Desolate Desert is actively running on date `d` for this guild
+    (any stage of any DD kvk event covers that day). Mirrors _tme_skip_predicate,
+    but tests the whole DD run (stage_keys=None) — used to force Treasure Hunt to
+    its ddForce time on DD weeks."""
+    for e in store.events_for_guild(guild_id):
+        s = e.get("schedule", {})
+        if s.get("type") == "kvk" and s.get("short") == "DD":
+            try:
+                start = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
+            except (ValueError, KeyError):
+                continue
+            if kvk.stage_active_on("DD", start, d, stage_keys=None):
+                return True
+    return False
+
+
 def _rotation_times_for(guild_id: int, name: str, occ: date) -> list[str]:
     """Materialized fire-times for a rotating (or City-Clash-glued) series'
     occurrence on `occ`, computed from the stored anchor. Empty list if the series
@@ -676,7 +697,12 @@ def _rotation_times_for(guild_id: int, name: str, occ: date) -> list[str]:
     A `glue` series (Imperial Showdown) borrows the target's (City Clash's) anchor
     and computes the target's slot for the weekend it shares — the Saturday before
     a Sunday occurrence. This reads the anchor, NOT City Clash's live rolled-forward
-    schedule, so it can't pick up next week's slot by accident."""
+    schedule, so it can't pick up next week's slot by accident.
+
+    `ddForce` (Treasure Hunt): on a week our server runs Desolate Desert, the fire
+    time is overridden to the ddForce value (04:00). The rotation slot is still
+    computed normally (the pointer advances underneath), so the week after a DD
+    week resumes the cycle as if nothing happened — only the display is replaced."""
     d = catalog.SERIES.get(name, {})
     glue = d.get("glue")
     if glue:
@@ -696,8 +722,33 @@ def _rotation_times_for(guild_id: int, name: str, occ: date) -> list[str]:
         anc = store.rotation_anchor(guild_id, name)
         if not anc:
             return []
+        # DD-week override: replace the displayed time but leave the pointer alone.
+        force = d.get("ddForce")
+        if force and _dd_week(guild_id, occ):
+            return [force]
         return series_mod.rotation_times(name, date.fromisoformat(anc["date"]), anc["idx"], occ)
     return []
+
+
+def _refresh_ddforce_series(guild_id: int) -> None:
+    """Re-materialize the current-week times for any rotating series with a
+    ddForce rule (Treasure Hunt), so a just-added/removed DD run flips its time
+    right away instead of waiting for the next UTC rollover."""
+    for name, d in catalog.SERIES.items():
+        if not (d.get("rotates") and d.get("ddForce")):
+            continue
+        ev = next((e for e in store.events_for_guild(guild_id)
+                   if e.get("schedule", {}).get("type") == "series"
+                   and e["schedule"].get("series") == name), None)
+        if ev is None:
+            continue
+        try:
+            occ = date.fromisoformat(ev["schedule"]["date"])
+        except (ValueError, KeyError):
+            continue
+        times = _rotation_times_for(guild_id, name, occ)
+        if times and times != ev["schedule"].get("times"):
+            store.update_event(ev["id"], guild_id, {"schedule": {"times": times}})
 
 
 def _seed_series_event(guild_id: int, name: str) -> dict | None:
@@ -828,6 +879,68 @@ async def rotation_seed(interaction: discord.Interaction,
     await interaction.response.send_message(
         "✅ Rotation seeded (auto-advances 01→04→11→19 each occurrence):\n"
         + "\n".join(f"• {ln}" for ln in lines), ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
+# ── every-N-week windows (Marauder's Hunt / Warrior's Trial) ──────────────────
+_WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _seed_nweek_event(guild_id: int, name: str, anchor: str) -> dict:
+    """Create (or replace) an every-N-week window event from catalog.NWEEK_EVENTS,
+    anchored to `anchor` (its first occurrence, must land on the configured day).
+    Times default to the catalog's; the "TBD" placeholder becomes empty (no ping
+    until an R4 sets a real time via /event_edit)."""
+    spec = catalog.NWEEK_EVENTS[name]
+    times = [t for t in spec.get("times", []) if t and t != "TBD"]
+    schedule = {"type": "everynweek", "interval_weeks": max(1, int(spec["interval_weeks"])),
+                "days": [spec["day"]], "times": times, "anchor": anchor}
+    # replace any existing instance so re-running re-anchors cleanly
+    for e in store.events_for_guild(guild_id):
+        s = e.get("schedule", {})
+        if s.get("type") == "everynweek" and e.get("name") == name:
+            store.remove_event(e["id"], guild_id)
+    ev = {"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id), "name": name,
+          "scope": SERVER_SCOPE, "schedule": schedule,
+          "duration": spec.get("duration", 60), "created_by": "system"}
+    store.add_event(ev)
+    return ev
+
+
+@bot.tree.command(name="nweek_setup",
+                  description="Seed the every-N-week windows (Marauder's Hunt 2wk, Warrior's Trial 4wk) from a first-date.")
+@app_commands.describe(marauders_hunt="Marauder's Hunt first occurrence UTC YYYY-MM-DD (a Tuesday)",
+                       warriors_trial="Warrior's Trial first occurrence UTC YYYY-MM-DD (a Tuesday)")
+async def nweek_setup(interaction: discord.Interaction,
+                      marauders_hunt: str | None = None, warriors_trial: str | None = None):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can seed these events.", ephemeral=True)
+    asked = {"Marauder's Hunt": marauders_hunt, "Warrior's Trial": warriors_trial}
+    if not any(asked.values()):
+        return await interaction.response.send_message(
+            "⚠️ Give at least one first-occurrence date (YYYY-MM-DD).", ephemeral=True)
+    lines = []
+    for name, anchor in asked.items():
+        if not anchor:
+            continue
+        spec = catalog.NWEEK_EVENTS.get(name)
+        if not spec:
+            continue
+        try:
+            ad = date.fromisoformat(anchor.strip())
+        except ValueError:
+            return await interaction.response.send_message(
+                f"⚠️ **{name}**: `{anchor}` isn't a valid date (YYYY-MM-DD).", ephemeral=True)
+        if ad.weekday() != spec["day"]:
+            want = _WEEKDAY_NAMES[spec["day"]]
+            return await interaction.response.send_message(
+                f"⚠️ **{name}** must start on a **{want}** — {anchor} is a "
+                f"{_WEEKDAY_NAMES[ad.weekday()]}.", ephemeral=True)
+        ev = _seed_nweek_event(interaction.guild_id, name, ad.isoformat())
+        lines.append(f"**{name}** — {describe_schedule(ev['schedule'])} · {ev['duration']}min")
+    await interaction.response.send_message(
+        "✅ Every-N-week events seeded:\n" + "\n".join(f"• {ln}" for ln in lines)
+        + "\n_Times show as TBD until set with `/event_edit … time:HH:MM`._", ephemeral=True)
     await refresh_board(interaction.guild)
 
 
@@ -986,7 +1099,7 @@ async def event_edit(interaction: discord.Interaction, event: str,
             assert tlist
         except (ValueError, AssertionError):
             return await interaction.response.send_message("⚠️ `time` must be one or more `HH:MM` (24h UTC), comma-separated.", ephemeral=True)
-        if stype in ("daily", "weekly", "everyother", "everyotherweek", "series"):
+        if stype in ("daily", "weekly", "everyother", "everyotherweek", "everynweek", "series"):
             changes["schedule"] = {"times": tlist}
         else:
             return await interaction.response.send_message(
