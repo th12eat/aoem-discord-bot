@@ -93,10 +93,16 @@ CITY_CLASH_TARGETS = {
 }
 
 
-def city_clash_lines() -> list[str]:
-    """Formatted 'ALLIANCE → City [Region]' lines for the City Clash alert."""
+def city_clash_lines(overrides: dict | None = None) -> list[str]:
+    """Formatted 'ALLIANCE → City [Region]' lines for the City Clash alert.
+    `overrides` (per-guild, from store.city_clash_targets) replaces the default
+    city list for any alliance it names; other alliances keep the catalog default.
+    Alliance display order follows the catalog, then any override-only alliances."""
+    merged = {tag: list(cities) for tag, cities in CITY_CLASH_TARGETS.items()}
+    for tag, cities in (overrides or {}).items():
+        merged[tag] = cities
     out = []
-    for tag, cities in CITY_CLASH_TARGETS.items():
+    for tag, cities in merged.items():
         joined = ", ".join(f"{c} [{r}]" for c, r in cities)
         out.append(f"**{tag}** → {joined}")
     return out

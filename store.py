@@ -199,6 +199,30 @@ def rotation_anchor(guild_id: int, name: str) -> dict:
     return guild_config(guild_id).get("rotation", {}).get("anchors", {}).get(name, {})
 
 
+# ── City Clash target-city overrides ──────────────────────────────────────────
+# Per-guild override of catalog.CITY_CLASH_TARGETS. shape under a guild:
+#   "city_clash_targets": { "WC1": [["City of Sapphire","North Kingsland"], ...] }
+# Only alliances present here override the catalog default (per alliance).
+def set_city_clash_target(guild_id: int, alliance: str, cities: list) -> dict:
+    """Set (or with empty `cities`, clear) an alliance's City Clash target list.
+    `cities` is a list of [city, region] pairs. Returns the full override map."""
+    with _lock:
+        cfg = load_config()
+        g = cfg["guilds"].setdefault(str(guild_id), {})
+        cct = g.setdefault("city_clash_targets", {})
+        if cities:
+            cct[alliance] = cities
+        else:
+            cct.pop(alliance, None)
+        _write(CONFIG_PATH, cfg)
+        return cct
+
+
+def city_clash_targets(guild_id: int) -> dict:
+    """This guild's City Clash target overrides ({} if none set)."""
+    return guild_config(guild_id).get("city_clash_targets", {})
+
+
 # ── events ───────────────────────────────────────────────────────────────────
 # shape: { "events": [ {id, guild_id, name, schedule{...}, created_by} ] }
 def load_events() -> list[dict]:

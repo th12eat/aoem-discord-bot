@@ -8,10 +8,16 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.10.0"
+VERSION = "1.11.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.11.0 — Editable City Clash targets**
+• **`/city_clash_target`** lets an R4 change the **target cities** shown in the
+  City Clash alert per alliance — enter `City [Region]; City [Region]` (leave the
+  field empty to reset that alliance to the default). Overrides persist and show
+  in every future City Clash ping.
 
 **v1.10.0 — Treasure Hunt DD rule + biweekly/monthly windows**
 • **Treasure Hunt** is now forced to **04:00** on any week our server runs
@@ -149,6 +155,8 @@ Pings @eRa8; any alliance's R4 may create/edit these.
 • `/nweek_setup` — seed the every-N-week windows: **Marauder's Hunt** (2 wks) and
   **Warrior's Trial** (4 wks), each from its first-occurrence date. Set the start
   time afterward with `/event_edit`. *[Server]*
+• `/city_clash_target` — set/clear an alliance's **City Clash target cities**
+  (`City [Region]; …`, empty = reset to default). Shown in the City Clash alert. *[Server]*
 
 **⚔️ Legions (Wonder Contest / Battle of Dawn) — _any R4_, server-wide**
 • `/legion_slot` — bind a ping role to a time-slot (Sat/Sun × 01:00/11:00/19:00 UTC).

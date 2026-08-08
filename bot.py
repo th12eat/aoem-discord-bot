@@ -944,6 +944,48 @@ async def nweek_setup(interaction: discord.Interaction,
     await refresh_board(interaction.guild)
 
 
+# ── City Clash target cities ──────────────────────────────────────────────────
+def _parse_city_clash(cities: str) -> list:
+    """Parse 'City A [Region A]; City B [Region B]' into [[city, region], ...].
+    Region is optional (defaults to ''). Semicolon-separated entries."""
+    out = []
+    for part in cities.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r"^(.*?)\s*\[(.*?)\]\s*$", part)
+        if m:
+            out.append([m.group(1).strip(), m.group(2).strip()])
+        else:
+            out.append([part, ""])
+    return out
+
+
+@bot.tree.command(name="city_clash_target",
+                  description="Set (or clear) an alliance's City Clash target cities shown in the alert.")
+@app_commands.describe(alliance="Which alliance's target list to change",
+                       cities="'City [Region]; City [Region]' — leave empty to reset to the default")
+@app_commands.choices(alliance=_ALLIANCE_CHOICES)
+async def city_clash_target(interaction: discord.Interaction,
+                            alliance: app_commands.Choice[str], cities: str | None = None):
+    # City Clash is server-wide, so any R4 (or Manage Server) may edit the plan
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message(
+            "Only an R4 can change City Clash targets.", ephemeral=True)
+    key = alliance.value
+    parsed = _parse_city_clash(cities) if cities else []
+    store.set_city_clash_target(interaction.guild_id, key, parsed)
+    if parsed:
+        shown = ", ".join(f"{c} [{r}]" if r else c for c, r in parsed)
+        msg = f"✅ **{key}** City Clash targets set: {shown}"
+    else:
+        msg = f"✅ **{key}** City Clash targets reset to the default."
+    # show the full resulting plan so the R4 can confirm
+    lines = catalog.city_clash_lines(store.city_clash_targets(interaction.guild_id))
+    msg += "\n\n**Current plan:**\n" + "\n".join(lines)
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
 # ── display label for a specific occurrence ──────────────────────────────────
 def occ_name(e: dict, dt: datetime) -> str:
     """Legible name for an event AT a specific fire-time. KvK occurrences name the
@@ -1466,9 +1508,12 @@ def _alert_text(e, scope, role_id, when, dt, is_kvk):
                       f"{e['name']} stage starts {ts_both(dt)}")
             return _kvk_stage_body(e, short, stages, idx, header)
     text = f"<@&{role_id}> **{e['name']}** ({scope_label(scope)}) {when} — {ts_both(dt)}"
-    # City Clash: append the planned city → alliance takeover list
+    # City Clash: append the planned city → alliance takeover list (with any
+    # per-guild target overrides set via /city_clash_target)
     if e["name"] == "City Clash":
-        text += "\n\n**Target cities:**\n" + "\n".join(catalog.city_clash_lines())
+        gid = int(e["guild_id"])
+        text += "\n\n**Target cities:**\n" + "\n".join(
+            catalog.city_clash_lines(store.city_clash_targets(gid)))
     return text
 
 
