@@ -887,24 +887,38 @@ _WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 def _seed_nweek_event(guild_id: int, name: str, anchor: str) -> dict:
-    """Create (or replace) an every-N-week window event from catalog.NWEEK_EVENTS,
-    anchored to `anchor` (its first occurrence, must land on the configured day).
-    Times default to the catalog's; the "TBD" placeholder becomes empty (no ping
-    until an R4 sets a real time via /event_edit)."""
+    """Create (or replace) an every-N-week window from catalog.NWEEK_EVENTS,
+    anchored to `anchor` (first occurrence, must land on the configured day).
+
+    Creates ONE calendar-only SERVER event (on the board, no start time, a single
+    reminder `finalDayReminderHrs` before the window ends) PLUS one ALLIANCE-scope
+    copy per alliance (each R4 sets its own time via /event_edit → alliance ping).
+    Returns the server event."""
     spec = catalog.NWEEK_EVENTS[name]
-    times = [t for t in spec.get("times", []) if t and t != "TBD"]
-    schedule = {"type": "everynweek", "interval_weeks": max(1, int(spec["interval_weeks"])),
-                "days": [spec["day"]], "times": times, "anchor": anchor}
-    # replace any existing instance so re-running re-anchors cleanly
-    for e in store.events_for_guild(guild_id):
+    iw = max(1, int(spec["interval_weeks"]))
+    dur = spec.get("duration", 60)
+    def _sched(**extra):
+        s = {"type": "everynweek", "interval_weeks": iw, "days": [spec["day"]],
+             "times": [], "anchor": anchor}
+        s.update(extra); return s
+    # replace any existing instances (server + alliance copies) so re-running re-anchors
+    for e in list(store.events_for_guild(guild_id)):
         s = e.get("schedule", {})
         if s.get("type") == "everynweek" and e.get("name") == name:
             store.remove_event(e["id"], guild_id)
-    ev = {"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id), "name": name,
-          "scope": SERVER_SCOPE, "schedule": schedule,
-          "duration": spec.get("duration", 60), "created_by": "system"}
-    store.add_event(ev)
-    return ev
+    # calendar-only server event
+    server_ev = {"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id), "name": name,
+                 "scope": SERVER_SCOPE,
+                 "schedule": _sched(calendarOnly=True,
+                                    finalDayReminderHrs=int(spec.get("finalDayReminderHrs", 6))),
+                 "duration": dur, "created_by": "system"}
+    store.add_event(server_ev)
+    # one timed-capable copy per alliance (time TBD until that R4 sets it)
+    for akey in ALLIANCES:
+        store.add_event({"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id), "name": name,
+                         "scope": akey, "schedule": _sched(), "duration": dur,
+                         "created_by": "system"})
+    return server_ev
 
 
 @bot.tree.command(name="nweek_setup",
@@ -939,8 +953,11 @@ async def nweek_setup(interaction: discord.Interaction,
         ev = _seed_nweek_event(interaction.guild_id, name, ad.isoformat())
         lines.append(f"**{name}** — {describe_schedule(ev['schedule'])} · {ev['duration']}min")
     await interaction.response.send_message(
-        "✅ Every-N-week events seeded:\n" + "\n".join(f"• {ln}" for ln in lines)
-        + "\n_Times show as TBD until set with `/event_edit … time:HH:MM`._", ephemeral=True)
+        "✅ Every-N-week events seeded (calendar-only on the board + a copy per alliance):\n"
+        + "\n".join(f"• {ln}" for ln in lines)
+        + "\n_The server entry is calendar-only (no time, ~6h-before-end reminder). "
+        "Each alliance's R4 sets their own time on their copy via `/event_edit … time:HH:MM`._",
+        ephemeral=True)
     await refresh_board(interaction.guild)
 
 
@@ -1141,6 +1158,11 @@ async def event_edit(interaction: discord.Interaction, event: str,
             assert tlist
         except (ValueError, AssertionError):
             return await interaction.response.send_message("⚠️ `time` must be one or more `HH:MM` (24h UTC), comma-separated.", ephemeral=True)
+        if ev.get("schedule", {}).get("calendarOnly"):
+            return await interaction.response.send_message(
+                "⚠️ This is a **calendar-only** server event (no start time). Set the "
+                "time on your **alliance's** copy of it instead — that's the one that pings.",
+                ephemeral=True)
         if stype in ("daily", "weekly", "everyother", "everyotherweek", "everynweek", "series"):
             changes["schedule"] = {"times": tlist}
         else:
@@ -1341,6 +1363,44 @@ async def scheduler_tick():
                         if not is_kvk:
                             expire = dt + timedelta(minutes=_event_duration_min(e))
                             _alert_now[okey] = (channel.id, msg.id, expire)
+
+            # ── calendar-only every-N-week window: one reminder ~Nh before it ends ──
+            #   No start time (alliances set their own), so instead nudge the server
+            #   `finalDayReminderHrs` before the window closes to finish in time.
+            s = e.get("schedule", {})
+            if s.get("type") == "everynweek" and s.get("calendarOnly"):
+                try:
+                    anchor = datetime.fromisoformat(s["anchor"]).replace(tzinfo=timezone.utc)
+                except (ValueError, KeyError):
+                    anchor = None
+                if anchor is not None:
+                    iw = max(1, int(s.get("interval_weeks", 2)))
+                    dur = int(e.get("duration", 60))
+                    hrs = int(s.get("finalDayReminderHrs", 6))
+                    # find the occurrence start whose window covers a reminder at `now`:
+                    # window end = start + dur minutes; reminder = end - hrs. Scan back
+                    # up to the window span (in days) + 1 to locate the start.
+                    span_days = max(1, dur // 1440 + 1)
+                    for back in range(span_days + 1):
+                        cand = (now - timedelta(days=back)).replace(hour=0, minute=0, second=0, microsecond=0)
+                        delta = (cand.date() - anchor.date()).days
+                        if delta < 0 or cand.weekday() not in set(s.get("days", [])) or delta % (7 * iw) != 0:
+                            continue
+                        start_dt = cand + timedelta(minutes=anchor.hour * 60 + anchor.minute)
+                        end_dt = start_dt + timedelta(minutes=dur)
+                        remind_at = (end_dt - timedelta(hours=hrs)).replace(second=0, microsecond=0)
+                        if remind_at == now.replace(second=0, microsecond=0):
+                            okey = f"nweekend|{e['id']}|{start_dt.isoformat()}"
+                            if okey in _fired:
+                                break
+                            _fired.add(okey)
+                            try:
+                                await channel.send(
+                                    f"<@&{role_id}> ⏳ **{e['name']}** ends in ~{hrs}h "
+                                    f"({ts_both(end_dt)}) — make sure your alliance has completed it.")
+                            except discord.DiscordException as ex:
+                                log.error("nweek reminder send failed: %s", ex)
+                        break
 
             # ── Trial of Scion windows (Behemoth Conquest, during Beast Taming) ──
             #   4 fixed 30-min windows/day; each pings at its start with what to do,
@@ -1709,6 +1769,36 @@ def _tbd_series_on(evs: list[dict], day_start: datetime) -> list[dict]:
     return out
 
 
+def _nweek_on(evs: list[dict], day_start: datetime) -> list[dict]:
+    """Calendar-only every-N-week SERVER events whose window is active on
+    `day_start`'s UTC date. These have no start time (they're calendar entries),
+    so they never surface via occurrences_between — list them on the board across
+    each day of their multi-day span."""
+    d = day_start.date()
+    out = []
+    for e in evs:
+        s = e.get("schedule", {})
+        if s.get("type") != "everynweek" or not s.get("calendarOnly"):
+            continue
+        try:
+            anchor = datetime.fromisoformat(s["anchor"]).date()
+        except (ValueError, KeyError):
+            continue
+        n = max(1, int(s.get("interval_weeks", 2)))
+        days = set(s.get("days", []))
+        dur_days = max(1, int(e.get("duration", 60)) // 1440 or 1)  # span in days
+        # was there a matching occurrence start within the last dur_days that still
+        # covers today? check each day in [d-(dur-1) .. d].
+        for back in range(dur_days):
+            cand = d - timedelta(days=back)
+            if cand < anchor:
+                continue
+            delta = (cand - anchor).days
+            if cand.weekday() in days and delta % (7 * n) == 0:
+                out.append(e); break
+    return out
+
+
 def _legion_summary(guild_id: int, now: datetime) -> str:
     """A persistent 'this weekend's legion' banner for the top of the board (shown
     whenever a seed is active, regardless of how many days out the weekend is)."""
@@ -1807,6 +1897,9 @@ async def refresh_board(guild: discord.Guild):
         # "time TBD" note so people know they're happening (they just aren't pinged).
         rows += [f"• ⏳ **{e['name']}** — _time TBD (set it to enable alerts)_"
                  for e in _tbd_series_on(evs, start)]
+        # calendar-only every-N-week windows: shown across their span, no time
+        rows += [f"• 🗓️ **{e['name']}** — _calendar (alliances set their own time)_"
+                 for e in _nweek_on(evs, start)]
         # legion slot pings that fall in this window
         rows += _legion_board_rows(guild.id, start, end)
         # Trial of Scion windows (Behemoth Conquest, during Beast Taming)

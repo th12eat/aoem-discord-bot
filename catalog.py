@@ -60,16 +60,21 @@ SERIES = {
                           "note": "Every Wednesday · fixed times 02/05/12/20 UTC (35 min each) · 12-week season"},
 }
 
-# Every-N-week recurring windows (fixed cadence, multi-day span). Modeled as an
-# `everynweek` schedule anchored to a first-occurrence date; the multi-day window
-# is a single start-day ping whose `duration` (minutes) covers the span, so the
-# "running now" alert self-clears at the end. day = weekday (Mon=0 … Sun=6).
-# NOTE: day/duration are TENTATIVE pending in-game confirmation — tune here.
-#   2 days = 2880 min · 3 days = 4320 min. times ["TBD"] → no ping until an R4
-#   sets the real start time via /event_edit (matches the series TBD convention).
+# Every-N-week recurring windows (fixed cadence, multi-day span). The fight TIME
+# is an ALLIANCE decision, not a server one, so these split in two:
+#   • a CALENDAR-ONLY server event — shown on the board, never has a start time,
+#     never pinged at a start (there isn't one). It fires ONE reminder ping
+#     `finalDayReminderHrs` before the window's final-day end, nudging alliances
+#     to finish before it expires.
+#   • a parallel ALLIANCE-scope copy per alliance (WC1/REU/MyT/AGC), created by
+#     /nweek_setup, which each R4 sets a real time on via /event_edit → that
+#     alliance gets pinged at their chosen time.
+# The multi-day window is a single occurrence whose `duration` (minutes) covers
+# the span. day = weekday (Mon=0 … Sun=6). day/duration TENTATIVE — tune here.
+#   2 days = 2880 min · 3 days = 4320 min.
 NWEEK_EVENTS = {
-    "Marauder's Hunt": {"interval_weeks": 2, "day": 1, "times": ["TBD"], "duration": 2880},  # Tue, 2-day (tentative)
-    "Warrior's Trial": {"interval_weeks": 4, "day": 1, "times": ["TBD"], "duration": 4320},  # Tue, 3-day (tentative)
+    "Marauder's Hunt": {"interval_weeks": 2, "day": 1, "duration": 2880, "calendarOnly": True, "finalDayReminderHrs": 6},  # Tue, 2-day (tentative)
+    "Warrior's Trial": {"interval_weeks": 4, "day": 1, "duration": 4320, "calendarOnly": True, "finalDayReminderHrs": 6},  # Tue, 3-day (tentative)
 }
 
 # Alliance leadership actionable events (specific date/time).

@@ -8,10 +8,19 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.11.0"
+VERSION = "1.12.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.12.0 — Marauder's / Warrior's: calendar + per-alliance timing**
+• `/nweek_setup` now seeds each of these as a **calendar-only server entry** (shown
+  on the board, no start time) **plus a copy for every alliance**. The server entry
+  never pings at a start; instead it sends **one reminder ~6h before the window
+  ends** so alliances finish in time. Each alliance's R4 sets **their own** fight
+  time on their copy with `/event_edit … time:HH:MM` to get pinged.
+• Editing a time on the calendar-only server entry is blocked (set it on the
+  alliance copy instead).
 
 **v1.11.0 — Editable City Clash targets**
 • **`/city_clash_target`** lets an R4 change the **target cities** shown in the
