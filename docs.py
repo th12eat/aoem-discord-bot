@@ -8,17 +8,23 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.12.0"
+VERSION = "1.12.1"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.12.1 — Alliance nweek copies are exact-date**
+• The per-alliance Marauder's / Warrior's copies are now **one-time events with an
+  editable date + time** — set your alliance's exact day within the window via
+  `/event_edit … datetime_:YYYY-MM-DDTHH:MM` (e.g. window opens the 11th, your
+  alliance runs it the 12th at 19:00). They **auto-regenerate each cycle**. The
+  server entry still shows the recurring window on the board.
 
 **v1.12.0 — Marauder's / Warrior's: calendar + per-alliance timing**
 • `/nweek_setup` now seeds each of these as a **calendar-only server entry** (shown
   on the board, no start time) **plus a copy for every alliance**. The server entry
   never pings at a start; instead it sends **one reminder ~6h before the window
-  ends** so alliances finish in time. Each alliance's R4 sets **their own** fight
-  time on their copy with `/event_edit … time:HH:MM` to get pinged.
+  ends** so alliances finish in time.
 • Editing a time on the calendar-only server entry is blocked (set it on the
   alliance copy instead).
 

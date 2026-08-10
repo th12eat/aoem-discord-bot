@@ -886,38 +886,75 @@ async def rotation_seed(interaction: discord.Interaction,
 _WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
+def _nweek_window_open(spec: dict, anchor: date, on_or_after: date) -> date | None:
+    """The window-open date for `name`'s occurrence on or after `on_or_after`,
+    given its anchor + cadence (weekday `day`, every `interval_weeks` weeks)."""
+    iw = max(1, int(spec["interval_weeks"]))
+    day = spec["day"]
+    cand = max(anchor, on_or_after)
+    for _ in range(400):
+        delta = (cand - anchor).days
+        if cand.weekday() == day and delta >= 0 and delta % (7 * iw) == 0:
+            return cand
+        cand += timedelta(days=1)
+    return None
+
+
+def _make_alliance_nweek_copies(guild_id: int, name: str, window_open: date) -> int:
+    """(Re)create the per-alliance ONE-TIME copies of an nweek event for the given
+    window-open date. Each is a `once` event the alliance R4 edits to their exact
+    day+time within the window via /event_edit datetime_. Removes any existing
+    alliance copies of this event first. Returns the count created."""
+    spec = catalog.NWEEK_EVENTS.get(name, {})
+    dur = spec.get("duration", 60)
+    # clear existing alliance copies for this event name
+    for e in list(store.events_for_guild(guild_id)):
+        if e.get("name") == name and e.get("scope") in ALLIANCES \
+           and e.get("schedule", {}).get("type") == "once" and e.get("nweek_alliance"):
+            store.remove_event(e["id"], guild_id)
+    made = 0
+    for akey in ALLIANCES:
+        # default to the window-open day at 00:00 UTC; the R4 sets the real day+time.
+        store.add_event({"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id), "name": name,
+                         "scope": akey, "nweek_alliance": name,
+                         "schedule": {"type": "once", "datetime": f"{window_open.isoformat()}T00:00"},
+                         "duration": dur, "created_by": "system"})
+        made += 1
+    return made
+
+
 def _seed_nweek_event(guild_id: int, name: str, anchor: str) -> dict:
     """Create (or replace) an every-N-week window from catalog.NWEEK_EVENTS,
     anchored to `anchor` (first occurrence, must land on the configured day).
 
-    Creates ONE calendar-only SERVER event (on the board, no start time, a single
-    reminder `finalDayReminderHrs` before the window ends) PLUS one ALLIANCE-scope
-    copy per alliance (each R4 sets its own time via /event_edit → alliance ping).
-    Returns the server event."""
+    Creates ONE calendar-only SERVER event (on the board, no start time; a single
+    reminder `finalDayReminderHrs` before the window ends) PLUS one ONE-TIME
+    ALLIANCE copy per alliance for the current window — each R4 sets their exact
+    date+time inside the window via /event_edit datetime_. The one-time copies are
+    auto-reseeded each cycle by daily_clear. Returns the server event."""
     spec = catalog.NWEEK_EVENTS[name]
     iw = max(1, int(spec["interval_weeks"]))
     dur = spec.get("duration", 60)
-    def _sched(**extra):
-        s = {"type": "everynweek", "interval_weeks": iw, "days": [spec["day"]],
-             "times": [], "anchor": anchor}
-        s.update(extra); return s
-    # replace any existing instances (server + alliance copies) so re-running re-anchors
+    anchor_d = date.fromisoformat(anchor)
+    # replace any existing instances of this event (server everynweek + alliance once)
     for e in list(store.events_for_guild(guild_id)):
-        s = e.get("schedule", {})
-        if s.get("type") == "everynweek" and e.get("name") == name:
+        if e.get("name") != name:
+            continue
+        st = e.get("schedule", {}).get("type")
+        if st == "everynweek" or (st == "once" and e.get("nweek_alliance")):
             store.remove_event(e["id"], guild_id)
-    # calendar-only server event
+    # calendar-only server event (recurring window shown on the board)
     server_ev = {"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id), "name": name,
                  "scope": SERVER_SCOPE,
-                 "schedule": _sched(calendarOnly=True,
-                                    finalDayReminderHrs=int(spec.get("finalDayReminderHrs", 6))),
+                 "schedule": {"type": "everynweek", "interval_weeks": iw, "days": [spec["day"]],
+                              "times": [], "anchor": anchor, "calendarOnly": True,
+                              "finalDayReminderHrs": int(spec.get("finalDayReminderHrs", 6))},
                  "duration": dur, "created_by": "system"}
     store.add_event(server_ev)
-    # one timed-capable copy per alliance (time TBD until that R4 sets it)
-    for akey in ALLIANCES:
-        store.add_event({"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id), "name": name,
-                         "scope": akey, "schedule": _sched(), "duration": dur,
-                         "created_by": "system"})
+    # one-time alliance copies for the current/next window
+    today = datetime.now(timezone.utc).date()
+    wopen = _nweek_window_open(spec, anchor_d, today) or anchor_d
+    _make_alliance_nweek_copies(guild_id, name, wopen)
     return server_ev
 
 
@@ -953,10 +990,12 @@ async def nweek_setup(interaction: discord.Interaction,
         ev = _seed_nweek_event(interaction.guild_id, name, ad.isoformat())
         lines.append(f"**{name}** — {describe_schedule(ev['schedule'])} · {ev['duration']}min")
     await interaction.response.send_message(
-        "✅ Every-N-week events seeded (calendar-only on the board + a copy per alliance):\n"
+        "✅ Every-N-week events seeded (calendar-only on the board + a one-time copy per alliance):\n"
         + "\n".join(f"• {ln}" for ln in lines)
-        + "\n_The server entry is calendar-only (no time, ~6h-before-end reminder). "
-        "Each alliance's R4 sets their own time on their copy via `/event_edit … time:HH:MM`._",
+        + "\n_The server entry is calendar-only (shows the window, no time, ~6h-before-end "
+        "reminder). Each alliance's R4 sets their **exact day & time within the window** on "
+        "their copy via `/event_edit … datetime_:YYYY-MM-DDTHH:MM`. The alliance copies "
+        "auto-regenerate each cycle._",
         ephemeral=True)
     await refresh_board(interaction.guild)
 
@@ -2049,7 +2088,39 @@ async def daily_clear():
     for guild in bot.guilds:
         roll_series(guild.id)          # advance any series whose day has passed
         purge_completed(guild.id)      # drop events that have fully concluded
+        _reseed_nweek_alliances(guild.id)  # regen one-time alliance copies each cycle
         await clear_board_channel(guild)
+
+
+def _reseed_nweek_alliances(guild_id: int):
+    """After purge, ensure each calendar-only server nweek event has fresh one-time
+    alliance copies for its current/next window. One-time copies complete + get
+    purged after their window, so this recreates them each cycle. Idempotent: skips
+    when copies for the current window-open date already exist."""
+    today = datetime.now(timezone.utc).date()
+    evs = store.events_for_guild(guild_id)
+    for e in evs:
+        s = e.get("schedule", {})
+        if s.get("type") != "everynweek" or not s.get("calendarOnly"):
+            continue
+        name = e.get("name")
+        spec = catalog.NWEEK_EVENTS.get(name)
+        if not spec:
+            continue
+        try:
+            anchor_d = date.fromisoformat(s["anchor"]).date() if isinstance(s["anchor"], datetime) \
+                       else date.fromisoformat(s["anchor"])
+        except (ValueError, KeyError):
+            continue
+        wopen = _nweek_window_open(spec, anchor_d, today)
+        if not wopen:
+            continue
+        # already have alliance copies for this window? (match on the window-open date)
+        have = any(a.get("name") == name and a.get("nweek_alliance")
+                   and a.get("schedule", {}).get("datetime", "").startswith(wopen.isoformat())
+                   for a in evs)
+        if not have:
+            _make_alliance_nweek_copies(guild_id, name, wopen)
 
 
 async def run_weekly_legion_purge(today):
