@@ -914,10 +914,13 @@ def _make_alliance_nweek_copies(guild_id: int, name: str, window_open: date) -> 
             store.remove_event(e["id"], guild_id)
     made = 0
     for akey in ALLIANCES:
-        # default to the window-open day at 00:00 UTC; the R4 sets the real day+time.
+        # Placeholder at the window-open day; `timeSet:false` means DON'T ping until
+        # the alliance R4 sets their real day+time via /event_edit datetime_ (which
+        # flips timeSet true). Shown on the alliance list as "time TBD" meanwhile.
         store.add_event({"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id), "name": name,
                          "scope": akey, "nweek_alliance": name,
-                         "schedule": {"type": "once", "datetime": f"{window_open.isoformat()}T00:00"},
+                         "schedule": {"type": "once", "datetime": f"{window_open.isoformat()}T00:00",
+                                      "timeSet": False},
                          "duration": dur, "created_by": "system"})
         made += 1
     return made
@@ -959,14 +962,17 @@ def _seed_nweek_event(guild_id: int, name: str, anchor: str) -> dict:
 
 
 @bot.tree.command(name="nweek_setup",
-                  description="Seed the every-N-week windows (Marauder's Hunt 2wk, Warrior's Trial 4wk) from a first-date.")
+                  description="Seed recurring windows (Marauder's 2wk, Warrior's 4wk, Fallen Frontier weekly) from a first-date.")
 @app_commands.describe(marauders_hunt="Marauder's Hunt first occurrence UTC YYYY-MM-DD (a Tuesday)",
-                       warriors_trial="Warrior's Trial first occurrence UTC YYYY-MM-DD (a Tuesday)")
+                       warriors_trial="Warrior's Trial first occurrence UTC YYYY-MM-DD (a Tuesday)",
+                       fallen_frontier="Fallen Frontier first occurrence UTC YYYY-MM-DD (a Wednesday)")
 async def nweek_setup(interaction: discord.Interaction,
-                      marauders_hunt: str | None = None, warriors_trial: str | None = None):
+                      marauders_hunt: str | None = None, warriors_trial: str | None = None,
+                      fallen_frontier: str | None = None):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
         return await interaction.response.send_message("Only an R4 can seed these events.", ephemeral=True)
-    asked = {"Marauder's Hunt": marauders_hunt, "Warrior's Trial": warriors_trial}
+    asked = {"Marauder's Hunt": marauders_hunt, "Warrior's Trial": warriors_trial,
+             "Fallen Frontier": fallen_frontier}
     if not any(asked.values()):
         return await interaction.response.send_message(
             "⚠️ Give at least one first-occurrence date (YYYY-MM-DD).", ephemeral=True)
@@ -993,9 +999,9 @@ async def nweek_setup(interaction: discord.Interaction,
         "✅ Every-N-week events seeded (calendar-only on the board + a one-time copy per alliance):\n"
         + "\n".join(f"• {ln}" for ln in lines)
         + "\n_The server entry is calendar-only (shows the window, no time, ~6h-before-end "
-        "reminder). Each alliance's R4 sets their **exact day & time within the window** on "
-        "their copy via `/event_edit … datetime_:YYYY-MM-DDTHH:MM`. The alliance copies "
-        "auto-regenerate each cycle._",
+        "reminder). Each alliance's copy stays **silent (no ping) until its R4 sets a day & "
+        "time within the window** via `/event_edit … datetime_:YYYY-MM-DDTHH:MM`. The alliance "
+        "copies auto-regenerate each cycle._",
         ephemeral=True)
     await refresh_board(interaction.guild)
 
@@ -1214,6 +1220,8 @@ async def event_edit(interaction: discord.Interaction, event: str,
             return await interaction.response.send_message("⚠️ `datetime_` must be `YYYY-MM-DDTHH:MM`.", ephemeral=True)
         if stype == "once":
             changes.setdefault("schedule", {})["datetime"] = datetime_
+            # setting a real day+time enables pinging for an alliance nweek copy
+            changes["schedule"]["timeSet"] = True
         elif stype == "kvk":
             changes.setdefault("schedule", {})["start"] = datetime_
         else:
@@ -1362,6 +1370,10 @@ async def scheduler_tick():
             scope = e.get("scope", SERVER_SCOPE)
             role_id = ping_role_id(guild.id, scope)
             if not role_id:
+                continue
+            # calendar/alliance events whose time isn't set yet must NOT ping (the
+            # placeholder datetime would otherwise alert everyone at the window open).
+            if e.get("schedule", {}).get("timeSet") is False:
                 continue
             is_kvk = e.get("schedule", {}).get("type") == "kvk"
             # KvK: start-only alerts; others: 1h + now
@@ -1762,9 +1774,12 @@ class BoardView(discord.ui.View):
         d1s, d1e = sched.utc_day_bounds(now + timedelta(days=1))
         evs = [e for e in store.events_for_guild(interaction.guild_id)
                if e.get("scope") in keys]
+        # alliance copies awaiting a time — don't fire, but remind the R4 to set one
+        unset = [e for e in evs if e.get("schedule", {}).get("timeSet") is False]
 
         def block(title, start, end):
-            pairs = sched.occurrences_for_events(evs, start, end)
+            timed = [e for e in evs if e.get("schedule", {}).get("timeSet") is not False]
+            pairs = sched.occurrences_for_events(timed, start, end)
             if not pairs:
                 return f"__{title}__\n*(none)*"
             rows = "\n".join(
@@ -1773,11 +1788,13 @@ class BoardView(discord.ui.View):
             return f"__{title}__\n{rows}"
 
         names = ", ".join(sorted(keys))
-        await _send_ephemeral(interaction,
-            f"🔎 **Your alliance events** ({names})\n\n"
-            f"{block('Today (UTC)', d0s, d0e)}\n\n"
-            f"{block('Tomorrow (UTC)', d1s, d1e)}",
-            kind="my_events")
+        msg = (f"🔎 **Your alliance events** ({names})\n\n"
+               f"{block('Today (UTC)', d0s, d0e)}\n\n"
+               f"{block('Tomorrow (UTC)', d1s, d1e)}")
+        if unset:
+            msg += "\n\n__⏳ Time not set__ (set with `/event_edit … datetime_:YYYY-MM-DDTHH:MM`)\n" + \
+                   "\n".join(f"• [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}**" for e in unset)
+        await _send_ephemeral(interaction, msg, kind="my_events")
 
     @discord.ui.button(label="Changelog", emoji="📜",
                        style=discord.ButtonStyle.secondary,
@@ -2092,11 +2109,28 @@ async def daily_clear():
         await clear_board_channel(guild)
 
 
+def _nweek_current_or_next_open(spec: dict, anchor: date, today: date):
+    """The window-open date whose window is CURRENTLY active (open ≤ today <
+    open+span), else the next upcoming window-open. Returns (date, is_current)."""
+    iw = max(1, int(spec["interval_weeks"]))
+    day = spec["day"]
+    span_days = max(1, int(spec.get("duration", 60)) // 1440 or 1)
+    # is a window currently open? check the last `span_days` for a matching start.
+    for back in range(span_days):
+        cand = today - timedelta(days=back)
+        delta = (cand - anchor).days
+        if cand >= anchor and cand.weekday() == day and delta % (7 * iw) == 0:
+            return cand, True
+    nxt = _nweek_window_open(spec, anchor, today)
+    return nxt, False
+
+
 def _reseed_nweek_alliances(guild_id: int):
-    """After purge, ensure each calendar-only server nweek event has fresh one-time
-    alliance copies for its current/next window. One-time copies complete + get
-    purged after their window, so this recreates them each cycle. Idempotent: skips
-    when copies for the current window-open date already exist."""
+    """After purge, ensure each calendar-only server nweek event has one-time
+    alliance copies for its current (or next upcoming) window. One-time copies
+    complete + get purged after their window, so this recreates them each cycle.
+    Idempotent: skips when a copy whose datetime falls inside the target window
+    already exists — so an R4's chosen day/time within the window is never clobbered."""
     today = datetime.now(timezone.utc).date()
     evs = store.events_for_guild(guild_id)
     for e in evs:
@@ -2108,18 +2142,24 @@ def _reseed_nweek_alliances(guild_id: int):
         if not spec:
             continue
         try:
-            anchor_d = date.fromisoformat(s["anchor"]).date() if isinstance(s["anchor"], datetime) \
-                       else date.fromisoformat(s["anchor"])
+            anchor_d = date.fromisoformat(s["anchor"])
         except (ValueError, KeyError):
             continue
-        wopen = _nweek_window_open(spec, anchor_d, today)
+        wopen, _cur = _nweek_current_or_next_open(spec, anchor_d, today)
         if not wopen:
             continue
-        # already have alliance copies for this window? (match on the window-open date)
-        have = any(a.get("name") == name and a.get("nweek_alliance")
-                   and a.get("schedule", {}).get("datetime", "").startswith(wopen.isoformat())
-                   for a in evs)
-        if not have:
+        span_days = max(1, int(spec.get("duration", 60)) // 1440 or 1)
+        wend = wopen + timedelta(days=span_days)
+        # a copy already covers this window if its date is within [wopen, wend)
+        def _in_window(a):
+            if a.get("name") != name or not a.get("nweek_alliance"):
+                return False
+            try:
+                dd = date.fromisoformat(a.get("schedule", {}).get("datetime", "")[:10])
+            except ValueError:
+                return False
+            return wopen <= dd < wend
+        if not any(_in_window(a) for a in evs):
             _make_alliance_nweek_copies(guild_id, name, wopen)
 
 

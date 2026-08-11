@@ -73,8 +73,9 @@ SERIES = {
 # the span. day = weekday (Mon=0 … Sun=6). day/duration TENTATIVE — tune here.
 #   2 days = 2880 min · 3 days = 4320 min.
 NWEEK_EVENTS = {
-    "Marauder's Hunt": {"interval_weeks": 2, "day": 1, "duration": 2880, "calendarOnly": True, "finalDayReminderHrs": 6},  # Tue, 2-day (tentative)
-    "Warrior's Trial": {"interval_weeks": 4, "day": 1, "duration": 4320, "calendarOnly": True, "finalDayReminderHrs": 6},  # Tue, 3-day (tentative)
+    "Marauder's Hunt": {"interval_weeks": 2, "day": 1, "duration": 4320, "calendarOnly": True, "finalDayReminderHrs": 6},  # Tue, 3-day
+    "Warrior's Trial": {"interval_weeks": 4, "day": 1, "duration": 4320, "calendarOnly": True, "finalDayReminderHrs": 6},  # Tue, 3-day
+    "Fallen Frontier": {"interval_weeks": 1, "day": 2, "duration": 1440, "calendarOnly": True, "finalDayReminderHrs": 6},  # Wed, weekly, 1-day
 }
 
 # Alliance leadership actionable events (specific date/time).

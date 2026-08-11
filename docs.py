@@ -8,10 +8,19 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.12.1"
+VERSION = "1.12.2"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.12.2 — No ping until time set + Fallen Frontier**
+• Alliance copies of Marauder's / Warrior's / Fallen Frontier **no longer ping at
+  the window open** — they stay silent (shown as "time not set" in *My Alliance
+  Events*) until that alliance's R4 sets a real day+time via `/event_edit …
+  datetime_:`. Setting the time enables the ping.
+• **Fallen Frontier** added to `/nweek_setup`: weekly (Wednesdays), 1-day,
+  calendar-only server entry + a per-alliance editable copy — same model as the others.
+• Marauder's Hunt & Warrior's Trial are both **3-day** windows now.
 
 **v1.12.1 — Alliance nweek copies are exact-date**
 • The per-alliance Marauder's / Warrior's copies are now **one-time events with an
