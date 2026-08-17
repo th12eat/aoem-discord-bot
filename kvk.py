@@ -153,12 +153,50 @@ KVK_DEFS = {
     },
     "PC": {
         "name": "Primordial Conflict",
+        # Seven-day, four-kingdom round-robin. Details mirror the Primordial
+        # Conflict dashboard + the Order Workshop / Day 6 Showdown flyers.
+        #
+        # Order Workshop: TWO 1-hour contests per battle day (Days 2-4). The first
+        # is ALWAYS 19:00 UTC on OUR server (guaranteed); the second is the
+        # opponent's, at their voted time (varies, unknown until set). Per-day
+        # second times are set via /event_edit ws2_d2 / ws2_d3 / ws2_d4.
+        "workshop": {
+            "stage_key": "battle",   # runs during the Battle Stage
+            "duration": 60,          # minutes per contest
+            "first_time": "19:00",   # our server, every battle day (fixed)
+        },
         "stages": [
-            {"key": "mm",   "title": "Matchmaking", "days": 1, "summary": "Find a match for PC (wait)"},
-            {"key": "shop", "title": "Workshop", "days": 3,
-             "summary": "Fight each server 3× a day", "actionable": "Do the Workshop events"},
-            {"key": "batl", "title": "Battle", "days": 2,
-             "summary": "Wait 1 day, then fight at Imperial", "actionable": "Hold Refineries"},
+            {"key": "mm", "title": "Matchmaking", "days": 1,
+             "summary": "Servers paired — scout & plan (no scoring yet)",
+             "actionable": "Scout the three opponent servers (dashboard Scouting tab) and assign gather/PvP roles",
+             "prep": "Save gather marches & speed-ups. The Battle Stage opens {nextDate} — our Order Workshop is 19:00 UTC daily"},
+            {"key": "battle", "title": "Battle Stage", "days": 3,
+             "summary": "Round-robin — gather Primordial Dew + contest Order Workshops (2 per day)",
+             "king": "Special KvK — NO troop loss. Units wounded in PvP recover, so fight freely.",
+             "scoring": [
+                "Gather Primordial Dew at Alchemy Pools — 100 Dew → 10K points (1 march on a Lv.4 pool + rest on Lv.3)",
+                "Order Workshops — capture = 600M, +200M if held at end, +500 pts/sec per person inside",
+                "Lv.4 pool Corrupted Hyena — land the killing blow for +10% gather speed at that pool",
+                "Combat eliminations — score within tier gap ≤ 2 (no lasting loss this cycle)",
+             ],
+             "actionable": "Fight BOTH workshop events daily (ours 19:00 UTC + the opponent's) and keep marches gathering Dew",
+             "prep": "Win the Battle Stage to earn the Day 5 battlefield pick — selection is {nextDate}"},
+            {"key": "select", "title": "Battlefield Selection", "days": 1,
+             "summary": "Leading kingdom picks the showdown map + time",
+             "actionable": "If we lead, the king (or top-alliance R5) picks the battlefield & time by 12:00 UTC — pick our prime window",
+             "prep": "Position marches for the 4-way showdown on {nextDate}"},
+            {"key": "showdown", "title": "Showdown", "days": 1,
+             "summary": "4-way fight over 8 Essence Refineries around the chosen Imperial City",
+             "scoring": [
+                "Occupying kingdom earns 1M Kingdom Points/sec per refinery held",
+                "Each refinery pays 800M to its last holder at contest end (8 × 800M = 6.4B)",
+                "Refineries are rally-only — no solo marches, no war machines",
+                "Primordial Essence: garrison a refinery (50K+ units) for 1/sec, + 1 per 500 combat pts (max 70K)",
+             ],
+             "actionable": "Lock our home-corner refinery cluster first, then push the flanks; taxi-rally the roster in after start"},
+            {"key": "recovery", "title": "Recovery", "days": 1,
+             "summary": "Partial recovery of battle losses (minimal this no-troop-loss cycle)",
+             "actionable": "Collect rewards — event complete"},
         ],
     },
     "DD": {
@@ -267,6 +305,55 @@ def scion_windows(short: str, start: datetime, flip: bool = False) -> list[dict]
                 server = "theirs" if server == "ours" else "ours"
             out.append({"start": ws, "end": ws + dur, "server": server, "time": w["time"]})
         day += timedelta(days=1)
+    return sorted(out, key=lambda x: x["start"])
+
+
+def workshop_windows(short: str, start: datetime, second_times: dict | None = None) -> list[dict]:
+    """Order Workshop contest windows (Primordial Conflict, Battle Stage), as
+    absolute UTC datetimes.
+
+    Only KvKs with a `workshop` config produce windows. Two contests per battle
+    day: the FIRST is always our server at the configured `first_time` (19:00
+    UTC, guaranteed); the SECOND is the opponent's, whose time varies and is
+    unknown until set — pass it per battle-day-number in `second_times`, e.g.
+    {2: "11:00", 3: "01:00"}. A day with no second time yields only its first
+    window (the guaranteed one).
+
+    Returns dicts: {start, end, kind ('ours'|'theirs'), day (2..4), time ('HH:MM')}.
+    """
+    defn = KVK_DEFS.get(short, {})
+    cfg = defn.get("workshop")
+    if not cfg:
+        return []
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    stage = next((s for s in compute_stages(short, start) if s["key"] == cfg["stage_key"]), None)
+    if stage is None:
+        return []
+    second_times = second_times or {}
+    dur = timedelta(minutes=cfg.get("duration", 60))
+
+    def _dt(day_date, hhmm):
+        h, m = (int(x) for x in hhmm.split(":"))
+        return datetime(day_date.year, day_date.month, day_date.day, h, m, tzinfo=timezone.utc)
+
+    # Battle Stage day 1 == event Day 2 (matchmaking is Day 1). Number windows by
+    # the event day (2,3,4) so /event_edit ws2_d2 etc. line up with the dashboard.
+    out = []
+    day = stage["start"].date()
+    last = stage["end"].date()  # exclusive
+    event_day = 2
+    while day < last:
+        # first (ours) — always 19:00 UTC
+        ws = _dt(day, cfg["first_time"])
+        out.append({"start": ws, "end": ws + dur, "kind": "ours", "day": event_day, "time": cfg["first_time"]})
+        # second (theirs) — only if a time has been set for this battle day
+        t2 = second_times.get(event_day) or second_times.get(str(event_day))
+        if t2:
+            ws2 = _dt(day, t2)
+            out.append({"start": ws2, "end": ws2 + dur, "kind": "theirs", "day": event_day, "time": t2})
+        day += timedelta(days=1)
+        event_day += 1
     return sorted(out, key=lambda x: x["start"])
 
 

@@ -1140,7 +1140,10 @@ async def event_remove(interaction: discord.Interaction, event: str):
                        scope="New scope (optional)",
                        scion_first="Behemoth only: which server hosts the FIRST daily Trial of Scion window",
                        inv_atk="Behemoth only: invasion ATTACK time HH:MM UTC (we invade opponent)",
-                       inv_def="Behemoth only: invasion DEFENSE time HH:MM UTC (they invade us)")
+                       inv_def="Behemoth only: invasion DEFENSE time HH:MM UTC (they invade us)",
+                       ws2_d2="Primordial only: Day 2 2nd (opponent) Order Workshop time HH:MM UTC",
+                       ws2_d3="Primordial only: Day 3 2nd (opponent) Order Workshop time HH:MM UTC",
+                       ws2_d4="Primordial only: Day 4 2nd (opponent) Order Workshop time HH:MM UTC")
 @app_commands.autocomplete(event=_remove_autocomplete)  # same picker: events you may admin
 @app_commands.choices(scope=_SCOPE_CHOICES,
                       scion_first=[app_commands.Choice(name="Our server (#008) — default", value="ours"),
@@ -1150,7 +1153,8 @@ async def event_edit(interaction: discord.Interaction, event: str,
                      datetime_: str | None = None, duration: int | None = None,
                      scope: app_commands.Choice[str] | None = None,
                      scion_first: app_commands.Choice[str] | None = None,
-                     inv_atk: str | None = None, inv_def: str | None = None):
+                     inv_atk: str | None = None, inv_def: str | None = None,
+                     ws2_d2: str | None = None, ws2_d3: str | None = None, ws2_d4: str | None = None):
     ev = next((e for e in store.events_for_guild(interaction.guild_id) if e["id"] == event.strip()), None)
     if ev is None:
         return await interaction.response.send_message("⚠️ No matching event found.", ephemeral=True)
@@ -1193,6 +1197,24 @@ async def event_edit(interaction: discord.Interaction, event: str,
             return await interaction.response.send_message(
                 f"⚠️ `{fld}` must be `HH:MM` (24h UTC).", ephemeral=True)
         changes[fld] = val
+    # Primordial: per-battle-day 2nd (opponent) Order Workshop times. Merge onto
+    # the event's existing ws_second dict {day: "HH:MM"} so days set separately persist.
+    ws2_in = {2: ws2_d2, 3: ws2_d3, 4: ws2_d4}
+    if any(v is not None for v in ws2_in.values()):
+        if stype != "kvk" or not kvk.KVK_DEFS.get(ev["schedule"].get("short"), {}).get("workshop"):
+            return await interaction.response.send_message(
+                "⚠️ `ws2_dN` only applies to **Primordial Conflict** (Order Workshop times).", ephemeral=True)
+        merged = dict(ev.get("ws_second") or {})
+        for day, val in ws2_in.items():
+            if val is None:
+                continue
+            try:
+                h, m = val.split(":"); assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+            except (ValueError, AssertionError):
+                return await interaction.response.send_message(
+                    f"⚠️ `ws2_d{day}` must be `HH:MM` (24h UTC).", ephemeral=True)
+            merged[str(day)] = val
+        changes["ws_second"] = merged
     if time:
         # accept one or more comma-separated HH:MM (a series occurrence can have
         # several, e.g. Starfall Vein's four windows)
@@ -1244,6 +1266,10 @@ async def event_edit(interaction: discord.Interaction, event: str,
         else:
             parts = [f"{w['kind']} {w['time']}" for w in wins]
             extra += " · 🐘 invasion → " + ", ".join(parts) + " UTC"
+    if "ws_second" in changes:
+        ws2 = changes["ws_second"]
+        setd = ", ".join(f"D{d} {ws2[str(d)]}" for d in (2, 3, 4) if str(d) in ws2) or "none"
+        extra += f" · 🔧 2nd workshop → {setd} UTC (1st always 19:00)"
     await interaction.response.send_message(
         f"✏️ Updated **{updated['name']}** (`{updated['id']}`) — {describe_schedule(updated['schedule'])}"
         + (f" · {updated.get('duration')}min" if updated.get('duration') else "") + extra,
@@ -1510,6 +1536,41 @@ async def scheduler_tick():
                                     pass
                             _alert_now[okey] = (channel.id, msg.id, w["end"])
 
+            # ── Order Workshop windows (Primordial Conflict, Battle Stage) ──
+            #   Two 1-hour contests per battle day: ours (19:00 UTC, guaranteed)
+            #   and the opponent's (per-day time, set via /event_edit ws2_dN).
+            #   Each pings T-1h AND at start; the 1h ping is deleted when start
+            #   fires, and the start ping self-deletes after the 60-min window.
+            if is_kvk:
+                short = e["schedule"]["short"]
+                kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+                for w in kvk.workshop_windows(short, kstart, second_times=e.get("ws_second")):
+                    for offset, when in ((60, "in 1 hour"), (0, "starting now")):
+                        if w["start"] - timedelta(minutes=offset) != now:
+                            continue
+                        okey = f"ws|{e['id']}|{w['kind']}|{w['start'].isoformat()}"
+                        fkey = f"{okey}|{offset}"
+                        if fkey in _fired:
+                            continue
+                        _fired.add(fkey)
+                        text = _workshop_alert_text(e, role_id, w, when)
+                        try:
+                            msg = await channel.send(text)
+                        except discord.DiscordException as ex:
+                            log.error("workshop alert send failed: %s", ex)
+                            continue
+                        if offset == 60:
+                            _alert_1h[okey] = msg.id
+                        else:
+                            old = _alert_1h.pop(okey, None)
+                            if old:
+                                try:
+                                    m = await channel.fetch_message(old)
+                                    await m.delete()
+                                except discord.DiscordException:
+                                    pass
+                            _alert_now[okey] = (channel.id, msg.id, w["end"])
+
         # ── legion slot pings (server-wide, WC↔BoD alternating) ──
         #   Same lifecycle as normal events: T-1h + at-start; the 1h alert is
         #   deleted when start fires, and the start alert self-deletes after the
@@ -1685,6 +1746,35 @@ def _invasion_alert_text(e, role_id, w, when):
         ]
     else:
         lines.append("Get ready — do **NOT** pre-position on the enemy server before the window opens (anyone who does is removed at event start). Top up rally troops and line up rally leaders on our side.")
+    return "\n".join(lines)
+
+
+def _workshop_alert_text(e, role_id, w, when):
+    """An Order Workshop contest ping. `w` is a window dict from
+    kvk.workshop_windows(); `when` is 'in 1 hour' or 'starting now'. 'ours' is our
+    guaranteed 19:00 UTC event; 'theirs' is the opponent's (per-day) event."""
+    ours = w["kind"] == "ours"
+    live = when == "starting now"
+    head_state = "LIVE now" if live else f"in 1 hour ({ts(w['start'], 't')})"
+    where_emoji = "🛡️" if ours else "⚔️"
+    where = "our server (19:00 UTC)" if ours else "the opponent server"
+    title = f"🔧{where_emoji} **Order Workshop — {'OUR EVENT' if ours else 'OPPONENT EVENT'} {head_state}**"
+    gist = (f"Day {w['day']} · 3 workshops, {int((w['end']-w['start']).total_seconds()//60)}-min contest on **{where}**.")
+    lines = [
+        f"<@&{role_id}> {title} — {ts_both(w['start'])}",
+        f"_{gist}_",
+    ]
+    if live:
+        lines += [
+            "**How to score:** flood the zone (no cap — more bodies = faster capture). Capture = **600M**, "
+            "+**200M** if held at the end, +**500 pts/sec per person** inside. **Stay inside until fully capped** — "
+            "don't leave to farm or PvP. No troop loss this cycle, so contest hard.",
+            "**Target 2, not 3** — dominate two workshops rather than spreading thin across all three.",
+            f"⏳ Window closes {ts(w['end'], 'R')}.",
+        ]
+    else:
+        lines.append("Get ready — line up rally/Kraken leads and pre-stage marches near the workshop regions. "
+                     "Teleport in when it opens, then walk in on foot.")
     return "\n".join(lines)
 
 
@@ -1914,6 +2004,24 @@ def _scion_board_rows(events: list[dict], start: datetime, end: datetime) -> lis
     return rows
 
 
+def _workshop_board_rows(events: list[dict], start: datetime, end: datetime) -> list[str]:
+    """Order Workshop windows (Primordial Conflict, Battle Stage) within [start,end]."""
+    rows = []
+    for e in events:
+        s = e.get("schedule", {})
+        if s.get("type") != "kvk":
+            continue
+        try:
+            kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
+        except (ValueError, KeyError):
+            continue
+        for w in kvk.workshop_windows(s["short"], kstart, second_times=e.get("ws_second")):
+            if start <= w["start"] <= end:
+                where = "our server" if w["kind"] == "ours" else "opponent server"
+                rows.append(f"• {ts(w['start'],'t')} — 🔧 **Order Workshop** · Day {w['day']} · {where} ({ts(w['start'],'R')})")
+    return rows
+
+
 def _invasion_board_rows(events: list[dict], start: datetime, end: datetime) -> list[str]:
     """Behemoth invasion windows (Attack/Defense) within [start,end]."""
     rows = []
@@ -1962,6 +2070,8 @@ async def refresh_board(guild: discord.Guild):
         rows += _scion_board_rows(evs, start, end)
         # Behemoth invasion windows (Attack/Defense)
         rows += _invasion_board_rows(evs, start, end)
+        # Order Workshop windows (Primordial Conflict, Battle Stage)
+        rows += _workshop_board_rows(evs, start, end)
         if not rows:
             return f"__{title}__\n*(none)*"
         return f"__{title}__\n" + "\n".join(rows)
