@@ -8,10 +8,10 @@ resolved per-guild via /config_alliance and stored in config.json.
 
 # key -> (display name, R4/admin role name, member role name)
 ALLIANCES = {
-    "WC1": ("WorldClass",     "WorldClass R4 - eRa8",     "WorldClass eRa8"),
-    "AGC": ("AuroraGodCourt", "AuroraGodCourt R4 - eRa8", "AuroraGodCourt eRa8"),
-    "REU": ("ReUnions",       "ReUnions R4 - eRa8",       "ReUnions eRa8"),
-    "MyT": ("Mythic",         "Mythic R4 - eRa8",         "Mythic eRa8"),
+    "WC1": ("WorldClass",  "WorldClass R4 - eRa8",  "WorldClass eRa8"),
+    "REU": ("CourtOfGods", "CourtOfGods R4 - eRa8", "CourtOfGods eRa8"),
+    "FUN": ("FunUnited",   "FunUnited R4 - eRa8",   "FunUnited eRa8"),
+    "MyT": ("Mythic",      "Mythic R4 - eRa8",      "Mythic eRa8"),
 }
 
 SERVER_SCOPE = "server"
@@ -24,7 +24,7 @@ def scope_label(scope: str) -> str:
     """Short bracket label for board/list display."""
     if scope == SERVER_SCOPE:
         return "Server"
-    return scope  # WC1 / AGC / REU / MyT
+    return scope  # WC1 / REU / FUN / MyT
 
 
 def scope_display(scope: str) -> str:

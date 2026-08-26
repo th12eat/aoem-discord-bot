@@ -66,7 +66,7 @@ SERIES = {
 #     never pinged at a start (there isn't one). It fires ONE reminder ping
 #     `finalDayReminderHrs` before the window's final-day end, nudging alliances
 #     to finish before it expires.
-#   • a parallel ALLIANCE-scope copy per alliance (WC1/REU/MyT/AGC), created by
+#   • a parallel ALLIANCE-scope copy per alliance (WC1/REU/FUN/MyT), created by
 #     /nweek_setup, which each R4 sets a real time on via /event_edit → that
 #     alliance gets pinged at their chosen time.
 # The multi-day window is a single occurrence whose `duration` (minutes) covers
@@ -90,12 +90,12 @@ CITY_CLASH_TARGETS = {
     "WC1": [("City of Sapphire", "North Kingsland"),
             ("City of Fiery Stallion", "Kyuno"),
             ("City of Eagle", "Olympia")],
-    "REU": [("City of Black Reef", "West Kingsland"),
+    "FUN": [("City of Black Reef", "West Kingsland"),
             ("City of Jade Viper", "Neilos"),
             ("City of Desert Camel", "Tinir")],
     "MyT": [("City of White Pierce", "East Kingsland"),
             ("City of Qilin", "Eastland")],
-    "AGC": [("City of Golden Lion", "Gaul")],
+    "REU": [("City of Golden Lion", "Gaul")],
 }
 
 

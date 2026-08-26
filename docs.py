@@ -69,7 +69,7 @@ _Broad, user-visible changes per release._
   and **at** each 90-min window. When both servers pick the same time the windows
   merge into one **⚔️🛡️ Attack & Defense** alert; otherwise separate ⚔️ Attack /
   🛡️ Defense pings fire. Each says where to be — **WC1** on both servers (attack +
-  defend), **AGC/REU/MyT** on our server rallying the Elephant — plus how to score.
+  defend), **REU/FUN/MyT** on our server rallying the Elephant — plus how to score.
 • The **Attack/Defense stage-start (Day-4) notice** now lists the locked invasion
   time(s) and the same who-goes-where plan; invasions also show on the board.
 • Set the times with `/event_edit … inv_atk:HH:MM inv_def:HH:MM` (defaults to the
@@ -151,7 +151,7 @@ _Broad, user-visible changes per release._
 • Duplicate events (same name + scope firing at the same time) are rejected.
 
 **v1.0.0 — First release**
-• Server-wide (@eRa8) and per-alliance (WC1/AGC/REU/MyT) event scopes.
+• Server-wide (@eRa8) and per-alliance (WC1/REU/FUN/MyT) event scopes.
 • `/event_add` (once/daily/weekly/every-other) with UTC times.
 • Auto-updating board of today's + tomorrow's server events, rolling over at UTC midnight.
 • Role pings at T-1h and at start; ephemeral member queries (`/next`, `/today`, `/week`)."""

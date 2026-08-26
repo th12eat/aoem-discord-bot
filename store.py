@@ -245,6 +245,51 @@ def add_event(event: dict) -> None:
         _write(EVENTS_PATH, data)
 
 
+# ── one-time alliance-key migration ───────────────────────────────────────────
+def migrate_alliance_keys(mapping: dict[str, str], token: str) -> dict:
+    """Rewrite stored alliance TAGS across config + events per `mapping`
+    (old_key → new_key), ONCE. Each dict is rebuilt in a single pass reading old
+    keys, so a shuffle (e.g. AGC→REU while REU→FUN) never clobbers.
+
+    A shuffle is NOT self-idempotent (after AGC→REU, a re-run's REU→FUN would move
+    the wrong data), so a run-once `token` is recorded in config._migrations; if
+    it's already present this is a no-op. Returns a count summary (all-zero when
+    skipped). Call on startup."""
+    def remap(k):
+        return mapping.get(k, k)
+    counts = {"event_scopes": 0, "config_alliances": 0, "legion_slots": 0, "city_clash": 0, "skipped": False}
+    with _lock:
+        cfg = load_config()
+        done = cfg.setdefault("_migrations", {})
+        if done.get(token):
+            counts["skipped"] = True
+            return counts
+        # events: scope field
+        data = _read(EVENTS_PATH, {"events": []})
+        for e in data.get("events", []):
+            if e.get("scope") in mapping:
+                e["scope"] = mapping[e["scope"]]; counts["event_scopes"] += 1
+        _write(EVENTS_PATH, data)
+        # config: per-guild alliances dict, legion roster, city_clash_targets
+        for g in cfg.get("guilds", {}).values():
+            if isinstance(g.get("alliances"), dict):
+                counts["config_alliances"] += sum(1 for k in g["alliances"] if k in mapping)
+                g["alliances"] = {remap(k): v for k, v in g["alliances"].items()}
+            roster = g.get("legion", {}).get("roster")
+            if isinstance(roster, dict):
+                for slot, per_all in roster.items():
+                    if isinstance(per_all, dict) and any(k in mapping for k in per_all):
+                        roster[slot] = {remap(k): v for k, v in per_all.items()}
+                        counts["legion_slots"] += 1
+            cct = g.get("city_clash_targets")
+            if isinstance(cct, dict) and any(k in mapping for k in cct):
+                g["city_clash_targets"] = {remap(k): v for k, v in cct.items()}
+                counts["city_clash"] += 1
+        done[token] = True
+        _write(CONFIG_PATH, cfg)
+    return counts
+
+
 def remove_event(event_id: str, guild_id: int) -> bool:
     with _lock:
         data = _read(EVENTS_PATH, {"events": []})

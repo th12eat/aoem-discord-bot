@@ -3,7 +3,7 @@
 Slash-command based (required for ephemeral replies + no channel spam).
 
 Events carry a SCOPE: "server" (pings @eRa8, any R4 may manage) or an alliance
-key WC1/AGC/REU/MyT (pings that alliance's member role, only that alliance's R4
+key WC1/REU/FUN/MyT (pings that alliance's member role, only that alliance's R4
 may manage). Manage-Server is always a safety hatch.
 
 Admin:
@@ -108,6 +108,14 @@ _ALLIANCE_CHOICES = [app_commands.Choice(name=f"{v[0]} ({k})", value=k)
 @bot.event
 async def on_ready():
     log.info("Logged in as %s (id: %s)", bot.user, bot.user.id)
+    # one-time alliance-tag migration (AGC→REU, REU→FUN). Idempotent: keys not in
+    # the map pass through, so this is a no-op once storage is already migrated.
+    try:
+        summary = store.migrate_alliance_keys({"AGC": "REU", "REU": "FUN"}, token="agc_reu_fun_2026")
+        if not summary.get("skipped"):
+            log.info("Alliance-key migration applied: %s", summary)
+    except Exception as e:  # noqa: BLE001
+        log.error("Alliance-key migration failed: %s", e)
     # register the persistent board button so clicks work after a restart
     if not getattr(bot, "_board_view_added", False):
         bot.add_view(BoardView())
@@ -1711,7 +1719,7 @@ def _scion_alert_text(e, role_id, w):
 # everyone else stays on our server on the Elephant. Kept here so the wording is
 # consistent across the 1h-before ping, the at-time ping, and the stage notice.
 _INVASION_ROLES = ("**WC1** takes both servers (attack **and** defend); "
-                   "**AGC / REU / MyT** stay on **our server** rallying the Elephant.")
+                   "**REU / FUN / MyT** stay on **our server** rallying the Elephant.")
 
 
 def _invasion_alert_text(e, role_id, w, when):
