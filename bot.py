@@ -1837,9 +1837,13 @@ async def _send_long_ephemeral(interaction: discord.Interaction, text: str, kind
                 await prev.delete_original_response()
             except discord.DiscordException:
                 pass  # already dismissed / expired — nothing to clean up
-    parts = _chunk(text)
-    embeds = [discord.Embed(description=p) for p in parts]
-    await interaction.response.send_message(embeds=embeds, ephemeral=True)
+    # One embed PER MESSAGE: Discord caps a single message's combined embed size at
+    # 6000 chars, so packing several ≤4096 chunks into one message can exceed it.
+    # First chunk = the response, the rest = followups.
+    parts = _chunk(text) or [""]
+    await interaction.response.send_message(embed=discord.Embed(description=parts[0]), ephemeral=True)
+    for p in parts[1:]:
+        await interaction.followup.send(embed=discord.Embed(description=p), ephemeral=True)
     if kind is not None:
         _last_ephemeral[(interaction.user.id, kind)] = interaction
 
