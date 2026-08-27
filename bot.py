@@ -440,7 +440,7 @@ _LEGION_ACTION_CHOICES = [
                        event="seed: which legion event runs THIS weekend (alternates after)")
 @app_commands.choices(action=_LEGION_ACTION_CHOICES, slot=_LEGION_SLOT_CHOICES,
                       alliance=_ALLIANCE_CHOICES, event=_LEGION_EVENT_CHOICES)
-async def legion(interaction: discord.Interaction,
+async def legion_cmd(interaction: discord.Interaction,
                  action: app_commands.Choice[str],
                  slot: app_commands.Choice[str] | None = None,
                  role: discord.Role | None = None,
