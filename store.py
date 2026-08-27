@@ -182,7 +182,7 @@ def clear_legion_seed(guild_id: int) -> bool:
 #   } }
 # An anchor means "the occurrence on `date` used ROTATION_POOL[idx]"; every other
 # occurrence's slot is computed from it (see series.rotation_times), so it's
-# immutable and restart-safe. Set by /rotation_seed with a week's real timings.
+# immutable and restart-safe. Set by /seed with a week's real time.
 def set_rotation_anchor(guild_id: int, name: str, anchor_date: str, idx: int) -> dict:
     """Store (or overwrite) the pool anchor for a rotating series."""
     with _lock:

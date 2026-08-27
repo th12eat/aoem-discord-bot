@@ -24,7 +24,7 @@ SERVER_EVENTS = [
 #   duration   : minutes (World Campaign is a 4-hour window).
 #   rotates    : True → the fire time cycles through ROTATION_POOL, +1 slot per
 #                occurrence (see series.rotation_times). Auto-pings once an R4 has
-#                seeded the per-guild anchor via /rotation_seed. `fixed` stays
+#                seeded the per-guild anchor via /seed. `fixed` stays
 #                False for these (their time changes every occurrence, not weekly).
 #   glue       : name of another (rotating) series whose current pool slot this
 #                event borrows instead of holding its own anchor (Imperial Showdown
@@ -67,7 +67,7 @@ SERIES = {
 #     `finalDayReminderHrs` before the window's final-day end, nudging alliances
 #     to finish before it expires.
 #   • a parallel ALLIANCE-scope copy per alliance (WC1/REU/FUN/MyT), created by
-#     /nweek_setup, which each R4 sets a real time on via /event_edit → that
+#     /seed, which each R4 sets a real time on via /event_edit → that
 #     alliance gets pinged at their chosen time.
 # The multi-day window is a single occurrence whose `duration` (minutes) covers
 # the span. day = weekday (Mon=0 … Sun=6). day/duration TENTATIVE — tune here.

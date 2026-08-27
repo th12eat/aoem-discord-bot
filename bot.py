@@ -13,8 +13,8 @@ Admin:
   /server_event_add   server "opening soon" event (date range, pings everyone)
   /alliance_event_add alliance leadership event (specific date/time)
   /kvk_add            multi-day KvK; stages auto-mapped from a start date
-  /series_setup       seed rolling weekly server events (only next occ live; time
-                      TBD = no ping until set; Imperial Showdown skips TME weeks)
+  /seed               (re)seed ONE recurring event — rotating series (needs a time),
+                      every-N-week windows (needs a first-date), or fixed series
   /legion_slot        bind a ping role to a legion time-slot (Sat/Sun × 01/11/19)
   /legion_fill        add members to a slot (discord → role, names → roster)
   /legion_remove      remove members (discord + non-discord names) from all slots
@@ -50,6 +50,7 @@ import re
 import uuid
 import logging
 from datetime import date, datetime, timedelta, timezone
+from datetime import date as date_cls  # alias: /seed has a `date` param that shadows `date`
 
 import discord
 from discord import app_commands
@@ -781,28 +782,98 @@ def _seed_series_event(guild_id: int, name: str) -> dict | None:
     return ev
 
 
-@bot.tree.command(name="series_setup", description="Seed the recurring weekly server events (Imperial Showdown, City Clash, …).")
-async def series_setup(interaction: discord.Interaction):
+# ── /seed ─────────────────────────────────────────────────────────────────────
+# One command to (re)seed any single seedable event, replacing the old
+# series_setup / rotation_seed / nweek_setup trio. Pick ONE event; supply what it
+# needs: rotating series want `time` (this week's pool slot), every-N-week windows
+# want `date` (first-occurrence, on the right weekday), fixed/glued series need
+# neither. Re-seeding one event never disturbs the others — each is independent.
+_SEED_ROTATING = {"City Clash", "World Campaign", "Treasure Hunt"}   # need `time`
+_SEED_FIXED_SERIES = {"Imperial Showdown", "Starfall Vein"}          # need nothing
+_WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+def _seed_event_choices():
+    out = []
+    for n in catalog.SERIES:
+        tag = "rotating" if n in _SEED_ROTATING else "fixed"
+        out.append(app_commands.Choice(name=f"{n} ({tag} series)", value=n))
+    for n in catalog.NWEEK_EVENTS:
+        wd = _WEEKDAY_NAMES[catalog.NWEEK_EVENTS[n]["day"]]
+        out.append(app_commands.Choice(name=f"{n} (every-{catalog.NWEEK_EVENTS[n]['interval_weeks']}wk · {wd})", value=n))
+    return out
+
+
+@bot.tree.command(name="seed", description="Seed (or re-seed) ONE recurring event — rotating series need a time, N-week windows a date.")
+@app_commands.describe(event="Which event to seed",
+                       time="Rotating series only — this week's UTC time (01:00 / 04:00 / 11:00 / 19:00)",
+                       date="Every-N-week windows only — first-occurrence UTC date YYYY-MM-DD (correct weekday)")
+@app_commands.choices(event=_seed_event_choices())
+async def seed(interaction: discord.Interaction, event: app_commands.Choice[str],
+               time: str | None = None, date: str | None = None):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
-        return await interaction.response.send_message("Only an R4 can set up series events.", ephemeral=True)
-    existing = {e["name"] for e in store.events_for_guild(interaction.guild_id)
-                if e.get("schedule", {}).get("type") == "series"}
-    added, skipped = [], []
-    for name in catalog.SERIES:
-        if name in existing:
-            skipped.append(name)
-            continue
-        ev = _seed_series_event(interaction.guild_id, name)
-        if ev:
-            added.append(f"**{name}** — {describe_schedule(ev['schedule'])}")
-    msg = "✅ Series events seeded.\n"
-    if added:
-        msg += "\n".join(f"• {a}" for a in added)
-    if skipped:
-        msg += f"\n\n_Already present (unchanged):_ {', '.join(skipped)}"
-    if not added and not skipped:
-        msg = "No series are defined."
-    await interaction.response.send_message(msg, ephemeral=True)
+        return await interaction.response.send_message("Only an R4 can seed events.", ephemeral=True)
+    name = event.value
+    gid = interaction.guild_id
+
+    # ── every-N-week window (Marauder's / Warrior's / Fallen Frontier) ──
+    if name in catalog.NWEEK_EVENTS:
+        spec = catalog.NWEEK_EVENTS[name]
+        if not date:
+            return await interaction.response.send_message(
+                f"⚠️ **{name}** needs a `date` — its first-occurrence UTC date "
+                f"(a **{_WEEKDAY_NAMES[spec['day']]}**), e.g. `date:2026-08-25`.", ephemeral=True)
+        try:
+            ad = date_cls.fromisoformat(date.strip())
+        except ValueError:
+            return await interaction.response.send_message(
+                f"⚠️ `{date}` isn't a valid date (YYYY-MM-DD).", ephemeral=True)
+        if ad.weekday() != spec["day"]:
+            return await interaction.response.send_message(
+                f"⚠️ **{name}** must start on a **{_WEEKDAY_NAMES[spec['day']]}** — "
+                f"{date} is a {_WEEKDAY_NAMES[ad.weekday()]}.", ephemeral=True)
+        ev = _seed_nweek_event(gid, name, ad.isoformat())
+        await interaction.response.send_message(
+            f"✅ **{name}** seeded — {describe_schedule(ev['schedule'])} · {ev['duration']}min.\n"
+            "_Calendar-only on the board (no start ping; one reminder ~6h before the window ends). "
+            "Each alliance's copy is silent until its R4 sets a day+time via "
+            "`/event_edit … datetime_:YYYY-MM-DDTHH:MM`; copies auto-regenerate each cycle._",
+            ephemeral=True)
+        return await refresh_board(interaction.guild)
+
+    # ── rotating series (City Clash / World Campaign / Treasure Hunt) ──
+    if name in _SEED_ROTATING:
+        if not time or not _valid_pool_time(time.strip()):
+            return await interaction.response.send_message(
+                f"⚠️ **{name}** is a rotating series — give a `time` from "
+                "**01:00 / 04:00 / 11:00 / 19:00** (UTC) for this week; it auto-advances after.",
+                ephemeral=True)
+        _, _, line = _anchor_series(gid, name, time.strip())
+        # keep the glued Imperial Showdown in sync when City Clash moves
+        if name == "City Clash":
+            is_ev = next((e for e in store.events_for_guild(gid)
+                          if e.get("schedule", {}).get("type") == "series"
+                          and e["schedule"].get("series") == "Imperial Showdown"), None)
+            if is_ev is None:
+                _seed_series_event(gid, "Imperial Showdown")
+            else:
+                occ = date_cls.fromisoformat(is_ev["schedule"]["date"])
+                store.update_event(is_ev["id"], gid,
+                                   {"schedule": {"times": _rotation_times_for(gid, "Imperial Showdown", occ)}})
+        await interaction.response.send_message(f"✅ Seeded — {line} UTC (auto-advances each week).", ephemeral=True)
+        return await refresh_board(interaction.guild)
+
+    # ── fixed / glued series (Imperial Showdown / Starfall Vein) ──
+    existing = next((e for e in store.events_for_guild(gid)
+                     if e.get("schedule", {}).get("type") == "series" and e["schedule"].get("series") == name), None)
+    if existing:
+        store.remove_event(existing["id"], gid)  # re-seed = rebuild the current occurrence
+    ev = _seed_series_event(gid, name)
+    if not ev:
+        return await interaction.response.send_message(f"⚠️ Couldn't compute a next date for **{name}**.", ephemeral=True)
+    await interaction.response.send_message(
+        f"✅ **{name}** seeded — {describe_schedule(ev['schedule'])}"
+        + (" _(follows City Clash's slot each weekend)_" if name == "Imperial Showdown" else ""),
+        ephemeral=True)
     await refresh_board(interaction.guild)
 
 
@@ -815,7 +886,7 @@ def _anchor_series(guild_id: int, name: str, hhmm: str) -> tuple[str, int, str]:
     today = datetime.now(timezone.utc).date()
     d0 = series_mod.next_date(name, today - timedelta(days=1), skip=skip)
     store.set_rotation_anchor(guild_id, name, d0.isoformat(), idx)
-    # attach to the live event (create it if /series_setup wasn't run first)
+    # attach to the live event (create it if /seed wasn't run first)
     ev = next((e for e in store.events_for_guild(guild_id)
                if e.get("schedule", {}).get("type") == "series" and e["schedule"].get("series") == name), None)
     if ev is None:
@@ -831,69 +902,7 @@ def _valid_pool_time(hhmm: str) -> bool:
     return hhmm in catalog.ROTATION_POOL
 
 
-@bot.tree.command(name="rotation_seed",
-                  description="Seed this week's rotating event times (01/04/11/19 UTC pool); they auto-advance after.")
-@app_commands.describe(city_clash="City Clash (Sat) time this week — HH:MM UTC from 01/04/11/19",
-                       world_campaign_wed="World Campaign this Wednesday — HH:MM UTC",
-                       world_campaign_sun="World Campaign this Sunday — HH:MM UTC (next slot after Wed)",
-                       treasure_hunt="Treasure Hunt (Thu) time this week — HH:MM UTC")
-async def rotation_seed(interaction: discord.Interaction,
-                        city_clash: str, world_campaign_wed: str,
-                        world_campaign_sun: str, treasure_hunt: str):
-    if not can_admin_scope(interaction.user, SERVER_SCOPE):
-        return await interaction.response.send_message("Only an R4 can seed the rotation.", ephemeral=True)
-    entered = {"city_clash": city_clash, "world_campaign_wed": world_campaign_wed,
-               "world_campaign_sun": world_campaign_sun, "treasure_hunt": treasure_hunt}
-    bad = [f"`{k}`={v}" for k, v in entered.items() if not _valid_pool_time(v.strip())]
-    if bad:
-        return await interaction.response.send_message(
-            "⚠️ Times must be one of **01:00 / 04:00 / 11:00 / 19:00** (UTC). Bad: " + ", ".join(bad),
-            ephemeral=True)
-    gid = interaction.guild_id
-    # World Campaign: one anchor (its Wednesday), but validate the Sunday the R4
-    # typed matches the next pool slot — catches a mistyped time before it rotates
-    # wrong for weeks.
-    skip = None  # WC never skips
-    wc_wed_date = series_mod.next_date("World Campaign", datetime.now(timezone.utc).date() - timedelta(days=1), skip=skip)
-    # this week's Sunday for WC = the next WC-weekday strictly after the Wednesday
-    wc_sun_date = series_mod.next_date("World Campaign", wc_wed_date, skip=skip)
-    exp_sun_idx = series_mod.rotation_slot("World Campaign",
-                                           wc_wed_date, catalog.ROTATION_POOL.index(world_campaign_wed.strip()),
-                                           wc_sun_date)
-    if catalog.ROTATION_POOL[exp_sun_idx] != world_campaign_sun.strip():
-        return await interaction.response.send_message(
-            f"⚠️ World Campaign Sunday should be **{catalog.ROTATION_POOL[exp_sun_idx]}** "
-            f"(the next slot after Wed {world_campaign_wed.strip()}), not {world_campaign_sun.strip()}. "
-            "Check the times.", ephemeral=True)
-
-    lines = []
-    for name, hhmm in (("City Clash", city_clash.strip()),
-                       ("World Campaign", world_campaign_wed.strip()),
-                       ("Treasure Hunt", treasure_hunt.strip())):
-        _, _, line = _anchor_series(gid, name, hhmm)
-        lines.append(line)
-    # Imperial Showdown borrows City Clash's anchor — nothing to seed, but ensure
-    # its event exists and reflects the glued time.
-    is_ev = next((e for e in store.events_for_guild(gid)
-                  if e.get("schedule", {}).get("type") == "series" and e["schedule"].get("series") == "Imperial Showdown"), None)
-    if is_ev is None:
-        is_ev = _seed_series_event(gid, "Imperial Showdown")
-    else:
-        occ = date.fromisoformat(is_ev["schedule"]["date"])
-        store.update_event(is_ev["id"], gid,
-                           {"schedule": {"times": _rotation_times_for(gid, "Imperial Showdown", occ)}})
-    lines.append("**Imperial Showdown** — follows City Clash's slot each weekend")
-
-    await interaction.response.send_message(
-        "✅ Rotation seeded (auto-advances 01→04→11→19 each occurrence):\n"
-        + "\n".join(f"• {ln}" for ln in lines), ephemeral=True)
-    await refresh_board(interaction.guild)
-
-
 # ── every-N-week windows (Marauder's Hunt / Warrior's Trial) ──────────────────
-_WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-
 def _nweek_window_open(spec: dict, anchor: date, on_or_after: date) -> date | None:
     """The window-open date for `name`'s occurrence on or after `on_or_after`,
     given its anchor + cadence (weekday `day`, every `interval_weeks` weeks)."""
@@ -968,50 +977,6 @@ def _seed_nweek_event(guild_id: int, name: str, anchor: str) -> dict:
     _make_alliance_nweek_copies(guild_id, name, wopen)
     return server_ev
 
-
-@bot.tree.command(name="nweek_setup",
-                  description="Seed recurring windows (Marauder's 2wk, Warrior's 4wk, Fallen Frontier weekly) from a first-date.")
-@app_commands.describe(marauders_hunt="Marauder's Hunt first occurrence UTC YYYY-MM-DD (a Tuesday)",
-                       warriors_trial="Warrior's Trial first occurrence UTC YYYY-MM-DD (a Tuesday)",
-                       fallen_frontier="Fallen Frontier first occurrence UTC YYYY-MM-DD (a Wednesday)")
-async def nweek_setup(interaction: discord.Interaction,
-                      marauders_hunt: str | None = None, warriors_trial: str | None = None,
-                      fallen_frontier: str | None = None):
-    if not can_admin_scope(interaction.user, SERVER_SCOPE):
-        return await interaction.response.send_message("Only an R4 can seed these events.", ephemeral=True)
-    asked = {"Marauder's Hunt": marauders_hunt, "Warrior's Trial": warriors_trial,
-             "Fallen Frontier": fallen_frontier}
-    if not any(asked.values()):
-        return await interaction.response.send_message(
-            "⚠️ Give at least one first-occurrence date (YYYY-MM-DD).", ephemeral=True)
-    lines = []
-    for name, anchor in asked.items():
-        if not anchor:
-            continue
-        spec = catalog.NWEEK_EVENTS.get(name)
-        if not spec:
-            continue
-        try:
-            ad = date.fromisoformat(anchor.strip())
-        except ValueError:
-            return await interaction.response.send_message(
-                f"⚠️ **{name}**: `{anchor}` isn't a valid date (YYYY-MM-DD).", ephemeral=True)
-        if ad.weekday() != spec["day"]:
-            want = _WEEKDAY_NAMES[spec["day"]]
-            return await interaction.response.send_message(
-                f"⚠️ **{name}** must start on a **{want}** — {anchor} is a "
-                f"{_WEEKDAY_NAMES[ad.weekday()]}.", ephemeral=True)
-        ev = _seed_nweek_event(interaction.guild_id, name, ad.isoformat())
-        lines.append(f"**{name}** — {describe_schedule(ev['schedule'])} · {ev['duration']}min")
-    await interaction.response.send_message(
-        "✅ Every-N-week events seeded (calendar-only on the board + a one-time copy per alliance):\n"
-        + "\n".join(f"• {ln}" for ln in lines)
-        + "\n_The server entry is calendar-only (shows the window, no time, ~6h-before-end "
-        "reminder). Each alliance's copy stays **silent (no ping) until its R4 sets a day & "
-        "time within the window** via `/event_edit … datetime_:YYYY-MM-DDTHH:MM`. The alliance "
-        "copies auto-regenerate each cycle._",
-        ephemeral=True)
-    await refresh_board(interaction.guild)
 
 
 # ── City Clash target cities ──────────────────────────────────────────────────
