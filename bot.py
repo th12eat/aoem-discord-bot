@@ -7,23 +7,15 @@ key WC1/REU/FUN/MyT (pings that alliance's member role, only that alliance's R4
 may manage). Manage-Server is always a safety hatch.
 
 Admin:
-  /config             server @eRa8 role + board channel
-  /config_alliance    register an alliance's R4 role + member role
-  /event_add          generic event (scope, once/daily/weekly/every-other, UTC, duration)
-  /server_event_add   server "opening soon" event (date range, pings everyone)
-  /alliance_event_add alliance leadership event (specific date/time)
-  /kvk_add            multi-day KvK; stages auto-mapped from a start date
-  /seed               (re)seed ONE recurring event — rotating series (needs a time),
-                      every-N-week windows (needs a first-date), or fixed series
-  /legion_slot        bind a ping role to a legion time-slot (Sat/Sun × 01/11/19)
-  /legion_fill        add members to a slot (discord → role, names → roster)
-  /legion_remove      remove members (discord + non-discord names) from all slots
-  /legion_list        list slot members by alliance (discord + non-discord)
-  /legion_seed        seed WC↔BoD alternation (declare this weekend's event)
-  /legion_unseed      stop the alternation (scheduling exceptions)
-  /legion_status      show seed + slot roles
-  /event_edit         edit name / time / duration / scope
-  /event_remove       delete an event
+  /config type:        server (@eRa8 role + board channel) | alliance (R4 + member roles)
+  /event_add type:     custom (scope + once/daily/weekly/every-other) | server (opening
+                       date range) | alliance (curated, date+time) | kvk (multi-day, auto stages)
+  /seed event:         (re)seed ONE recurring event — rotating series (needs a time),
+                       every-N-week windows (needs a first-date), or fixed series
+  /legion action:      slot | fill | remove | list | seed | unseed | status | reset
+  /event_edit          edit name / time / duration / scope (+ KvK inv/ws times)
+  /event_remove        delete an event
+  /city_clash_target   set an alliance's City Clash target cities
 Member (ephemeral, scoped to what the viewer may see):
   /event_list /next /today /week
 
@@ -139,24 +131,55 @@ async def on_ready():
     log.info("Ready.")
 
 
-# ── /config ──────────────────────────────────────────────────────────────────
-@bot.tree.command(name="config", description="Set the @eRa8 server member role and board channel.")
-@app_commands.describe(server_member_role="@eRa8 — pinged for server-wide events",
-                       board_channel="Channel for the daily board (e.g. #event-scheduler)")
+# ── /config type:(server|alliance) ───────────────────────────────────────────
+# One command; `type` picks what to configure. Server → @eRa8 role + board
+# channel; Alliance → that alliance's R4 + member roles. (Replaces the old
+# /config + /config_alliance.)
+_CONFIG_TYPE_CHOICES = [
+    app_commands.Choice(name="Server — @eRa8 role + board channel", value="server"),
+    app_commands.Choice(name="Alliance — R4 + member roles", value="alliance"),
+]
+
+@bot.tree.command(name="config", description="Configure the bot: server (@eRa8 role + board), or an alliance's roles.")
+@app_commands.describe(type="What to configure",
+                       server_member_role="Server: @eRa8 — pinged for server-wide events",
+                       board_channel="Server: channel for the daily board (e.g. #event-scheduler)",
+                       alliance="Alliance: which alliance",
+                       r4_role="Alliance: that alliance's R4 role (may manage its events)",
+                       member_role="Alliance: that alliance's member role (pinged / may view)")
+@app_commands.choices(type=_CONFIG_TYPE_CHOICES, alliance=_ALLIANCE_CHOICES)
 async def config_cmd(interaction: discord.Interaction,
+                     type: app_commands.Choice[str],
                      server_member_role: discord.Role | None = None,
-                     board_channel: discord.TextChannel | None = None):
+                     board_channel: discord.TextChannel | None = None,
+                     alliance: app_commands.Choice[str] | None = None,
+                     r4_role: discord.Role | None = None,
+                     member_role: discord.Role | None = None):
     if not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message(
             "You need **Manage Server** to change configuration.", ephemeral=True)
+
+    if type.value == "alliance":
+        if not (alliance and r4_role and member_role):
+            return await interaction.response.send_message(
+                "⚠️ Alliance config needs **alliance**, **r4_role** and **member_role**.", ephemeral=True)
+        store.set_alliance_roles(interaction.guild_id, alliance.value, r4_role.id, member_role.id)
+        name = ALLIANCES[alliance.value][0]
+        return await interaction.response.send_message(
+            f"✅ **{name} ({alliance.value})** registered.\n"
+            f"R4: {r4_role.mention} · Members: {member_role.mention}", ephemeral=True)
+
+    # server
+    if server_member_role is None and board_channel is None:
+        return await interaction.response.send_message(
+            "⚠️ Server config needs at least one of **server_member_role** / **board_channel**.", ephemeral=True)
     store.set_guild_config(
         interaction.guild_id,
         server_member_role_id=server_member_role.id if server_member_role else None,
         board_channel_id=board_channel.id if board_channel else None,
     )
     cfg = store.guild_config(interaction.guild_id)
-    smr = cfg.get("server_member_role_id")
-    bc = cfg.get("board_channel_id")
+    smr = cfg.get("server_member_role_id"); bc = cfg.get("board_channel_id")
     await interaction.response.send_message(
         "✅ Config updated.\n"
         f"**@eRa8 role:** {('<@&'+str(smr)+'>') if smr else '—'}\n"
@@ -164,57 +187,128 @@ async def config_cmd(interaction: discord.Interaction,
         ephemeral=True)
 
 
-# ── /config_alliance ─────────────────────────────────────────────────────────
-@bot.tree.command(name="config_alliance", description="Register an alliance's R4 + member roles.")
-@app_commands.describe(alliance="Which alliance",
-                       r4_role="That alliance's R4 role (may manage its events)",
-                       member_role="That alliance's member role (pinged / may view)")
-@app_commands.choices(alliance=_ALLIANCE_CHOICES)
-async def config_alliance(interaction: discord.Interaction,
-                          alliance: app_commands.Choice[str],
-                          r4_role: discord.Role,
-                          member_role: discord.Role):
-    if not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message(
-            "You need **Manage Server** to change configuration.", ephemeral=True)
-    store.set_alliance_roles(interaction.guild_id, alliance.value, r4_role.id, member_role.id)
-    name = ALLIANCES[alliance.value][0]
-    await interaction.response.send_message(
-        f"✅ **{name} ({alliance.value})** registered.\n"
-        f"R4: {r4_role.mention} · Members: {member_role.mention}", ephemeral=True)
+# ── /event_add type:(custom|server|alliance|kvk) ─────────────────────────────
+# One add-command; `type` selects the flavor and which other options apply:
+#   custom   → free-form name + scope + recurrence (+times/weekdays/date/duration)
+#   server   → curated "opening soon" server event over a date RANGE (pings @eRa8)
+#   alliance → curated alliance leadership event at a specific date+time
+#   kvk      → multi-day KvK, stages auto-mapped from a start date
+# (Replaces /event_add + /server_event_add + /alliance_event_add + /kvk_add.)
+_EVENT_TYPE_CHOICES = [
+    app_commands.Choice(name="Custom (free-form: scope + recurrence)", value="custom"),
+    app_commands.Choice(name="Server opening (curated, date range)", value="server"),
+    app_commands.Choice(name="Alliance event (curated, date+time)", value="alliance"),
+    app_commands.Choice(name="KvK (multi-day, auto stages)", value="kvk"),
+]
+_RECUR_CHOICES = [app_commands.Choice(name="One-time", value="once"),
+                  app_commands.Choice(name="Daily", value="daily"),
+                  app_commands.Choice(name="Every other day", value="everyother"),
+                  app_commands.Choice(name="Weekly", value="weekly")]
 
-
-# ── /event_add ───────────────────────────────────────────────────────────────
-@bot.tree.command(name="event_add", description="Add an event (times in UTC).")
+@bot.tree.command(name="event_add", description="Add an event: custom / server opening / alliance / KvK (times in UTC).")
 @app_commands.describe(
-    name="Event name, e.g. Trojan Turmoil",
-    scope="Server-wide or a specific alliance",
-    recurrence="How it repeats",
-    times="UTC time(s), comma HH:MM — e.g. 03:00,13:00,21:00",
-    weekdays="Weekly only: Mon,Tue,Wed,Thu,Fri,Sat,Sun",
-    date="One-time date, or every-other-day start date: UTC YYYY-MM-DD",
+    type="Which kind of event to add",
+    scope="Custom: server-wide or a specific alliance",
+    recurrence="Custom: how it repeats",
+    name="Custom: event name, e.g. Trojan Turmoil",
+    times="Custom: UTC time(s), comma HH:MM — e.g. 03:00,13:00,21:00",
+    weekdays="Custom weekly only: Mon,Tue,Wed,Thu,Fri,Sat,Sun",
+    event="Server / Alliance / KvK: which curated event",
+    alliance="Alliance: which alliance",
+    date="One-time/every-other start, alliance date, KvK start, or server OPEN date: UTC YYYY-MM-DD",
+    time="Alliance: UTC HH:MM",
+    end_date="Server opening: closes UTC YYYY-MM-DD",
     duration="Minutes the event runs (default 60)",
 )
-@app_commands.choices(
-    scope=_SCOPE_CHOICES,
-    recurrence=[app_commands.Choice(name="One-time", value="once"),
-                app_commands.Choice(name="Daily", value="daily"),
-                app_commands.Choice(name="Every other day", value="everyother"),
-                app_commands.Choice(name="Weekly", value="weekly")],
-)
+@app_commands.choices(type=_EVENT_TYPE_CHOICES, scope=_SCOPE_CHOICES, recurrence=_RECUR_CHOICES,
+                      alliance=_ALLIANCE_CHOICES)
 async def event_add(interaction: discord.Interaction,
-                    name: str,
-                    scope: app_commands.Choice[str],
-                    recurrence: app_commands.Choice[str],
-                    times: str,
+                    type: app_commands.Choice[str],
+                    scope: app_commands.Choice[str] | None = None,
+                    recurrence: app_commands.Choice[str] | None = None,
+                    name: str | None = None,
+                    times: str | None = None,
                     weekdays: str | None = None,
+                    event: str | None = None,
+                    alliance: app_commands.Choice[str] | None = None,
                     date: str | None = None,
+                    time: str | None = None,
+                    end_date: str | None = None,
                     duration: int | None = None):
+    kind = type.value
+
+    # ── server opening (curated, date range, pings @eRa8) ──
+    if kind == "server":
+        if not can_admin_scope(interaction.user, SERVER_SCOPE):
+            return await interaction.response.send_message("Only an R4 can add server events.", ephemeral=True)
+        if not event or event not in catalog.SERVER_EVENTS:
+            return await interaction.response.send_message(
+                "⚠️ Pick an `event` from the server list.\nOptions: " + ", ".join(catalog.SERVER_EVENTS), ephemeral=True)
+        if not (date and end_date):
+            return await interaction.response.send_message(
+                "⚠️ Server openings need `date` (opens) and `end_date` (closes), both YYYY-MM-DD.", ephemeral=True)
+        try:
+            datetime.fromisoformat(f"{date}T00:00"); datetime.fromisoformat(f"{end_date}T00:00")
+        except ValueError:
+            return await interaction.response.send_message("⚠️ Dates must be `YYYY-MM-DD`.", ephemeral=True)
+        schedule = {"type": "once", "datetime": f"{date}T00:00", "rangeEnd": end_date, "opening": True}
+        ev = _mk_event(interaction, event, SERVER_SCOPE, schedule)
+        return await _finalize_add(interaction, ev, f"opens {date} → {end_date} UTC")
+
+    # ── alliance leadership event (curated, specific date+time) ──
+    if kind == "alliance":
+        if not (alliance and event and date and time):
+            return await interaction.response.send_message(
+                "⚠️ Alliance events need **alliance**, **event**, **date** (YYYY-MM-DD) and **time** (HH:MM).", ephemeral=True)
+        if not can_admin_scope(interaction.user, alliance.value):
+            return await interaction.response.send_message(
+                f"Only {alliance.value} R4 can add {alliance.value} events.", ephemeral=True)
+        if event not in catalog.ALLIANCE_EVENTS:
+            return await interaction.response.send_message(
+                "⚠️ Pick an `event` from the alliance list.\nOptions: " + ", ".join(catalog.ALLIANCE_EVENTS), ephemeral=True)
+        try:
+            datetime.fromisoformat(f"{date}T{time}")
+        except ValueError:
+            return await interaction.response.send_message("⚠️ Use date `YYYY-MM-DD` and time `HH:MM`.", ephemeral=True)
+        schedule = {"type": "once", "datetime": f"{date}T{time}"}
+        dur = duration or catalog.default_duration(event)  # World Campaign → 240 (4h)
+        ev = _mk_event(interaction, event, alliance.value, schedule, duration=dur)
+        return await _finalize_add(interaction, ev, f"{describe_schedule(schedule)} · {dur}min")
+
+    # ── KvK (multi-day, stages auto-derived) ──
+    if kind == "kvk":
+        if not can_admin_scope(interaction.user, SERVER_SCOPE):
+            return await interaction.response.send_message("Only an R4 can add KvK events.", ephemeral=True)
+        short = event
+        if not short or short not in kvk.KVK_DEFS:
+            return await interaction.response.send_message(
+                "⚠️ Pick a KvK `event`.\nOptions: " + ", ".join(f"{lbl}" for _, lbl in kvk.KVK_CHOICES), ephemeral=True)
+        if not date:
+            return await interaction.response.send_message("⚠️ KvK needs a start `date` (YYYY-MM-DD).", ephemeral=True)
+        try:
+            datetime.fromisoformat(f"{date}T00:00")
+        except ValueError:
+            return await interaction.response.send_message("⚠️ `date` must be `YYYY-MM-DD`.", ephemeral=True)
+        kname = kvk.KVK_DEFS[short]["name"]
+        schedule = {"type": "kvk", "short": short, "start": f"{date}T00:00"}
+        ev = _mk_event(interaction, kname, SERVER_SCOPE, schedule)
+        stages = kvk.compute_stages(short, datetime.fromisoformat(f"{date}T00:00").replace(tzinfo=timezone.utc))
+        preview = "\n".join(f"• {s['title']} — {utc_date(s['start'])}" for s in stages)
+        store.add_event(ev)  # KvK bypasses the duplicate-time check (stage-based)
+        if short == "DD":
+            _refresh_ddforce_series(interaction.guild_id)
+        await interaction.response.send_message(
+            f"✅ Added **{kname}** (`{ev['id']}`) — {len(stages)} stages:\n{preview}", ephemeral=True)
+        return await refresh_board(interaction.guild)
+
+    # ── custom (free-form) ──
+    if not (name and scope and recurrence and times):
+        return await interaction.response.send_message(
+            "⚠️ Custom events need **name**, **scope**, **recurrence** and **times**.", ephemeral=True)
     if not can_admin_scope(interaction.user, scope.value):
         who = "any R4" if scope.value == SERVER_SCOPE else f"{scope.value} R4"
         return await interaction.response.send_message(
             f"Only {who} can add **{scope_label(scope.value)}** events.", ephemeral=True)
-
     try:
         time_list = [t.strip() for t in times.split(",") if t.strip()]
         for t in time_list:
@@ -228,7 +322,7 @@ async def event_add(interaction: discord.Interaction,
             "⚠️ `times` must be one or more `HH:MM` (24h UTC), comma-separated.", ephemeral=True)
 
     rtype = recurrence.value
-    schedule: dict = {"type": rtype}
+    schedule = {"type": rtype}
     if rtype == "once":
         if not date:
             return await interaction.response.send_message(
@@ -267,33 +361,9 @@ async def event_add(interaction: discord.Interaction,
         schedule["days"] = sorted(set(days))
         schedule["times"] = time_list
 
-    event = {
-        "id": uuid.uuid4().hex[:8],
-        "guild_id": str(interaction.guild_id),
-        "name": name,
-        "scope": scope.value,
-        "schedule": schedule,
-        "duration": max(1, duration) if duration else 60,
-        "created_by": str(interaction.user.id),
-    }
-
-    # reject a true duplicate: same name + same scope that ever fires at the same
-    # time as an existing one. (Different events at the same time are fine.)
-    now = datetime.now(timezone.utc)
-    for existing in store.events_for_guild(interaction.guild_id):
-        if (existing["name"].strip().lower() == name.strip().lower()
-                and existing.get("scope", SERVER_SCOPE) == scope.value):
-            clash = sched.schedules_collide(existing, event, now)
-            if clash:
-                return await interaction.response.send_message(
-                    f"⚠️ **{name}** ({scope_label(scope.value)}) already occurs at that time "
-                    f"— next clash {ts(clash, 'F')}. Not added (duplicate).", ephemeral=True)
-
-    store.add_event(event)
-    await interaction.response.send_message(
-        f"✅ Added **{name}** (`{event['id']}`) · [{scope_label(scope.value)}] — "
-        f"{describe_schedule(schedule)}", ephemeral=True)
-    await refresh_board(interaction.guild)
+    event_obj = _mk_event(interaction, name, scope.value, schedule,
+                          duration=max(1, duration) if duration else 60)
+    await _finalize_add(interaction, event_obj, describe_schedule(schedule))
 
 
 # ── shared add helper ────────────────────────────────────────────────────────
@@ -323,52 +393,7 @@ def _mk_event(interaction, name, scope, schedule, **extra):
             "created_by": str(interaction.user.id), **extra}
 
 
-# ── /server_event_add — "opening soon", date RANGE, pings everyone ───────────
-# Curated names only; for a one-off custom name use /event_add instead.
-_SERVER_EVENT_CHOICES = [app_commands.Choice(name=n, value=n) for n in catalog.SERVER_EVENTS]
-
-@bot.tree.command(name="server_event_add", description="Announce a server-wide event opening (date range).")
-@app_commands.describe(event="Event", start_date="Opens UTC YYYY-MM-DD",
-                       end_date="Closes UTC YYYY-MM-DD")
-@app_commands.choices(event=_SERVER_EVENT_CHOICES)
-async def server_event_add(interaction: discord.Interaction, event: app_commands.Choice[str],
-                           start_date: str, end_date: str):
-    if not can_admin_scope(interaction.user, SERVER_SCOPE):
-        return await interaction.response.send_message("Only an R4 can add server events.", ephemeral=True)
-    name = event.value
-    try:
-        s = datetime.fromisoformat(f"{start_date}T00:00"); datetime.fromisoformat(f"{end_date}T00:00")
-    except ValueError:
-        return await interaction.response.send_message("⚠️ Dates must be `YYYY-MM-DD`.", ephemeral=True)
-    # alerts fire at the window open; range shown in the message/board
-    schedule = {"type": "once", "datetime": f"{start_date}T00:00", "rangeEnd": end_date, "opening": True}
-    ev = _mk_event(interaction, name, SERVER_SCOPE, schedule)
-    await _finalize_add(interaction, ev, f"opens {start_date} → {end_date} UTC")
-
-
-# ── /alliance_event_add — leadership actionable, specific date/time ──────────
-# Curated names only; for a one-off custom name use /event_add instead.
-_ALLI_EVENT_CHOICES = [app_commands.Choice(name=n, value=n) for n in catalog.ALLIANCE_EVENTS]
-
-@bot.tree.command(name="alliance_event_add", description="Add an alliance leadership event (specific time).")
-@app_commands.describe(alliance="Which alliance", event="Event",
-                       date="UTC YYYY-MM-DD", time="UTC HH:MM", duration="Minutes (default 60)")
-@app_commands.choices(alliance=_ALLIANCE_CHOICES, event=_ALLI_EVENT_CHOICES)
-async def alliance_event_add(interaction: discord.Interaction, alliance: app_commands.Choice[str],
-                             event: app_commands.Choice[str], date: str, time: str,
-                             duration: int | None = None):
-    if not can_admin_scope(interaction.user, alliance.value):
-        return await interaction.response.send_message(
-            f"Only {alliance.value} R4 can add {alliance.value} events.", ephemeral=True)
-    name = event.value
-    try:
-        datetime.fromisoformat(f"{date}T{time}")
-    except ValueError:
-        return await interaction.response.send_message("⚠️ Use date `YYYY-MM-DD` and time `HH:MM`.", ephemeral=True)
-    schedule = {"type": "once", "datetime": f"{date}T{time}"}
-    dur = duration or catalog.default_duration(name)  # World Campaign → 240 (4h)
-    ev = _mk_event(interaction, name, alliance.value, schedule, duration=dur)
-    await _finalize_add(interaction, ev, f"{describe_schedule(schedule)} · {dur}min")
+# (server-opening + alliance-event adds folded into /event_add type:server|alliance)
 
 
 # ── legion (server-wide): WC↔BoD alternating, 6 slot roles ───────────────────
@@ -384,10 +409,72 @@ _LEGION_EVENT_CHOICES = [app_commands.Choice(name="Wonder Contest (WC)", value="
                          app_commands.Choice(name="Battle of Dawn (BoD)", value="BoD")]
 
 
-@bot.tree.command(name="legion_slot", description="Bind a ping role to a legion time-slot (Sat/Sun × 01/11/19 UTC).")
-@app_commands.describe(slot="Which weekend time-slot", role="Role pinged at that slot's time")
-@app_commands.choices(slot=_LEGION_SLOT_CHOICES)
-async def legion_slot(interaction: discord.Interaction, slot: app_commands.Choice[str], role: discord.Role):
+# ── /legion action:(slot|fill|remove|list|seed|unseed|status|reset) ──────────
+# One command; `action` selects the operation and which options apply:
+#   slot    → bind a ping role to a time-slot   (needs slot + role)
+#   fill    → add members to a slot             (needs slot + members; alliance opt)
+#   remove  → remove members from all slots     (needs members)
+#   list    → show rosters                      (slot/alliance optional filters)
+#   seed    → declare this weekend's WC/BoD      (needs event)
+#   unseed  → stop the alternation
+#   status  → show seed + slot roles
+#   reset   → clear all slot roles + roster now
+# (Replaces the 8 /legion_* commands.)
+_LEGION_ACTION_CHOICES = [
+    app_commands.Choice(name="Set slot role", value="slot"),
+    app_commands.Choice(name="Fill slot (add members)", value="fill"),
+    app_commands.Choice(name="Remove members", value="remove"),
+    app_commands.Choice(name="List rosters", value="list"),
+    app_commands.Choice(name="Seed WC↔BoD (this weekend)", value="seed"),
+    app_commands.Choice(name="Unseed (stop alternation)", value="unseed"),
+    app_commands.Choice(name="Status", value="status"),
+    app_commands.Choice(name="Reset (clear roles + roster)", value="reset"),
+]
+
+@bot.tree.command(name="legion", description="Legion admin: set/fill slots, list rosters, seed WC↔BoD, status, reset.")
+@app_commands.describe(action="What to do",
+                       slot="slot/fill: which weekend time-slot · list: filter to one slot",
+                       role="slot: role pinged at that slot's time",
+                       members="fill/remove: @mentions/IDs and/or plain names (comma/newline)",
+                       alliance="fill: alliance for non-discord names · list: filter to one alliance",
+                       event="seed: which legion event runs THIS weekend (alternates after)")
+@app_commands.choices(action=_LEGION_ACTION_CHOICES, slot=_LEGION_SLOT_CHOICES,
+                      alliance=_ALLIANCE_CHOICES, event=_LEGION_EVENT_CHOICES)
+async def legion(interaction: discord.Interaction,
+                 action: app_commands.Choice[str],
+                 slot: app_commands.Choice[str] | None = None,
+                 role: discord.Role | None = None,
+                 members: str | None = None,
+                 alliance: app_commands.Choice[str] | None = None,
+                 event: app_commands.Choice[str] | None = None):
+    act = action.value
+    if act == "slot":
+        if not (slot and role):
+            return await interaction.response.send_message("⚠️ `slot` action needs **slot** and **role**.", ephemeral=True)
+        return await _do_legion_slot(interaction, slot, role)
+    if act == "fill":
+        if not (slot and members):
+            return await interaction.response.send_message("⚠️ `fill` action needs **slot** and **members**.", ephemeral=True)
+        return await _do_legion_fill(interaction, slot, members, alliance)
+    if act == "remove":
+        if not members:
+            return await interaction.response.send_message("⚠️ `remove` action needs **members**.", ephemeral=True)
+        return await _do_legion_remove(interaction, members)
+    if act == "list":
+        return await _do_legion_list(interaction, slot, alliance)
+    if act == "seed":
+        if not event:
+            return await interaction.response.send_message("⚠️ `seed` action needs **event** (WC or BoD).", ephemeral=True)
+        return await _do_legion_seed(interaction, event)
+    if act == "unseed":
+        return await _do_legion_unseed(interaction)
+    if act == "status":
+        return await _do_legion_status(interaction)
+    if act == "reset":
+        return await _do_legion_reset(interaction)
+
+
+async def _do_legion_slot(interaction: discord.Interaction, slot: app_commands.Choice[str], role: discord.Role):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
         return await interaction.response.send_message("Only an R4 can configure legion slots.", ephemeral=True)
     store.set_legion_slot(interaction.guild_id, slot.value, role.id)
@@ -410,13 +497,8 @@ def _member_alliance(m: discord.Member) -> str:
     return next(iter(a)) if a else "Other"
 
 
-@bot.tree.command(name="legion_fill", description="Add members to a legion slot (discord users → role, plain names → roster).")
-@app_commands.describe(slot="Which slot to fill",
-                       members="Mix of @mentions/IDs (discord) and plain names (non-discord), comma/space/newline separated",
-                       alliance="Alliance for non-discord names (defaults to your own alliance)")
-@app_commands.choices(slot=_LEGION_SLOT_CHOICES, alliance=_ALLIANCE_CHOICES)
-async def legion_fill(interaction: discord.Interaction, slot: app_commands.Choice[str], members: str,
-                      alliance: app_commands.Choice[str] | None = None):
+async def _do_legion_fill(interaction: discord.Interaction, slot: app_commands.Choice[str], members: str,
+                          alliance: app_commands.Choice[str] | None = None):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
         return await interaction.response.send_message("Only an R4 can fill legion slots.", ephemeral=True)
     slots = store.legion_config(interaction.guild_id).get("slots", {})
@@ -478,9 +560,7 @@ async def legion_fill(interaction: discord.Interaction, slot: app_commands.Choic
     await interaction.followup.send("\n".join(parts), ephemeral=True)
 
 
-@bot.tree.command(name="legion_remove", description="Remove members from legion slots (discord users + non-discord names).")
-@app_commands.describe(members="@mentions/IDs and/or plain names to remove from ALL legion slots")
-async def legion_remove(interaction: discord.Interaction, members: str):
+async def _do_legion_remove(interaction: discord.Interaction, members: str):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
         return await interaction.response.send_message("Only an R4 can remove legion members.", ephemeral=True)
     slots = store.legion_config(interaction.guild_id).get("slots", {})
@@ -549,13 +629,9 @@ def _legion_roster_text(guild: discord.Guild, want_slots, filter_alliance=None) 
     return "\n\n".join(blocks) if blocks else "*(no slots configured)*"
 
 
-@bot.tree.command(name="legion_list", description="List legion slot members (discord + non-discord), grouped by alliance.")
-@app_commands.describe(slot="Limit to one slot (default: all slots)",
-                       alliance="Limit to one alliance (default: all)")
-@app_commands.choices(slot=_LEGION_SLOT_CHOICES, alliance=_ALLIANCE_CHOICES)
-async def legion_list(interaction: discord.Interaction,
-                      slot: app_commands.Choice[str] | None = None,
-                      alliance: app_commands.Choice[str] | None = None):
+async def _do_legion_list(interaction: discord.Interaction,
+                          slot: app_commands.Choice[str] | None = None,
+                          alliance: app_commands.Choice[str] | None = None):
     leg = store.legion_config(interaction.guild_id)
     if not leg.get("slots") and not leg.get("roster"):
         return await interaction.response.send_message(
@@ -566,10 +642,7 @@ async def legion_list(interaction: discord.Interaction,
     await _send_long_ephemeral(interaction, f"⚔️ **Legion members{who}**\n\n{body}", kind="legion_list")
 
 
-@bot.tree.command(name="legion_seed", description="Seed the WC↔BoD alternation (declare this weekend's event).")
-@app_commands.describe(event="Which legion event runs THIS weekend (alternates every weekend after)")
-@app_commands.choices(event=_LEGION_EVENT_CHOICES)
-async def legion_seed(interaction: discord.Interaction, event: app_commands.Choice[str]):
+async def _do_legion_seed(interaction: discord.Interaction, event: app_commands.Choice[str]):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
         return await interaction.response.send_message("Only an R4 can seed legions.", ephemeral=True)
     sat = legion.weekend_saturday(datetime.now(timezone.utc).date())
@@ -586,8 +659,7 @@ async def legion_seed(interaction: discord.Interaction, event: app_commands.Choi
     await interaction.response.send_message(msg, ephemeral=True)
 
 
-@bot.tree.command(name="legion_unseed", description="Stop the legion alternation (for scheduling exceptions).")
-async def legion_unseed(interaction: discord.Interaction):
+async def _do_legion_unseed(interaction: discord.Interaction):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
         return await interaction.response.send_message("Only an R4 can unseed legions.", ephemeral=True)
     had = store.clear_legion_seed(interaction.guild_id)
@@ -596,8 +668,7 @@ async def legion_unseed(interaction: discord.Interaction):
         if had else "There was no active legion seed.", ephemeral=True)
 
 
-@bot.tree.command(name="legion_status", description="Show the current legion seed + slot roles.")
-async def legion_status(interaction: discord.Interaction):
+async def _do_legion_status(interaction: discord.Interaction):
     leg = store.legion_config(interaction.guild_id)
     seed = leg.get("seed"); slots = leg.get("slots", {})
     now = datetime.now(timezone.utc)
@@ -615,8 +686,7 @@ async def legion_status(interaction: discord.Interaction):
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
-@bot.tree.command(name="legion_reset", description="Clear all legion slot roles + roster now (same as the Monday auto-reset).")
-async def legion_reset(interaction: discord.Interaction):
+async def _do_legion_reset(interaction: discord.Interaction):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
         return await interaction.response.send_message("Only an R4 can reset legion roles.", ephemeral=True)
     if not store.legion_config(interaction.guild_id).get("slots"):
@@ -628,34 +698,7 @@ async def legion_reset(interaction: discord.Interaction):
         ephemeral=True)
 
 
-# ── /kvk_add — multi-day, stages auto-derived from a start date ──────────────
-_KVK_CHOICES = [app_commands.Choice(name=lbl, value=k) for k, lbl in kvk.KVK_CHOICES]
-
-@bot.tree.command(name="kvk_add", description="Add a multi-day KvK; stages auto-mapped from the start date.")
-@app_commands.describe(event="Which KvK", start_date="UTC start date YYYY-MM-DD")
-@app_commands.choices(event=_KVK_CHOICES)
-async def kvk_add(interaction: discord.Interaction, event: app_commands.Choice[str], start_date: str):
-    if not can_admin_scope(interaction.user, SERVER_SCOPE):
-        return await interaction.response.send_message("Only an R4 can add KvK events.", ephemeral=True)
-    try:
-        datetime.fromisoformat(f"{start_date}T00:00")
-    except ValueError:
-        return await interaction.response.send_message("⚠️ `start_date` must be `YYYY-MM-DD`.", ephemeral=True)
-    short = event.value
-    name = kvk.KVK_DEFS[short]["name"]
-    schedule = {"type": "kvk", "short": short, "start": f"{start_date}T00:00"}
-    ev = _mk_event(interaction, name, SERVER_SCOPE, schedule)
-    stages = kvk.compute_stages(short, datetime.fromisoformat(f"{start_date}T00:00").replace(tzinfo=timezone.utc))
-    preview = "\n".join(f"• {s['title']} — {utc_date(s['start'])}" for s in stages)
-    # KvK bypasses duplicate-time check (stage-based); add directly.
-    store.add_event(ev)
-    # Adding a DD run may force this week's Treasure Hunt to 04:00 — re-materialize
-    # its time now so it flips immediately rather than at the next rollover.
-    if short == "DD":
-        _refresh_ddforce_series(interaction.guild_id)
-    await interaction.response.send_message(
-        f"✅ Added **{name}** (`{ev['id']}`) — {len(stages)} stages:\n{preview}", ephemeral=True)
-    await refresh_board(interaction.guild)
+# (KvK add folded into /event_add type:kvk)
 
 
 # ── weekly series (rolling) ──────────────────────────────────────────────────

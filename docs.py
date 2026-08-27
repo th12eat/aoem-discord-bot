@@ -8,10 +8,23 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.12.2"
+VERSION = "1.13.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.13.0 — Fewer commands + alliance rename**
+• **Alliances renamed:** AGC → **REU** (CourtOfGods), old REU → **FUN** (FunUnited).
+  WC1 & MyT unchanged. Existing events, legion rosters and City Clash targets were
+  migrated automatically to the new tags.
+• **Big command consolidation** — 26 commands down to a handful:
+  · **`/config type:`** (server | alliance) replaces /config + /config_alliance.
+  · **`/event_add type:`** (custom | server | alliance | kvk) replaces the four
+    separate add-commands.
+  · **`/seed event:`** (pick one) replaces /series_setup + /rotation_seed +
+    /nweek_setup — and you can now re-seed **one** event without disturbing the others.
+  · **`/legion action:`** (slot | fill | remove | list | seed | unseed | status |
+    reset) replaces the eight /legion_* commands.
 
 **v1.12.2 — No ping until time set + Fallen Frontier**
 • Alliance copies of Marauder's / Warrior's / Fallen Frontier **no longer ping at
@@ -162,46 +175,45 @@ All times are entered in **UTC**; everyone *sees* them in their own local time.
 Each command notes its **scope** and **who can use it**.
 
 **⚙️ Setup — _Manage Server only_**
-• `/config` — set the @eRa8 role + board channel (#event-scheduler). *[Server]*
-• `/config_alliance` — register an alliance's R4 + member roles. *[Server]*
+• `/config type:server` — set the @eRa8 role + board channel (#event-scheduler). *[Server]*
+• `/config type:alliance` — register an alliance's R4 + member roles. *[Server]*
 
 **📣 Server-wide events — _any R4_ (or Manage Server)**
-Pings @eRa8; any alliance's R4 may create/edit these.
-• `/server_event_add` — announce an event **opening** (date range). *[Server]*
-• `/event_add` (scope: Server-wide) — recurring/one-time server event (+ duration). *[Server]*
-• `/kvk_add` — multi-day KvK (TME/GE/BC/PC/DD); stages auto-derived from the start date. *[Server]*
-• `/series_setup` — seed the rolling weekly events (Imperial Showdown, City Clash,
-  World Campaign, Treasure Hunt, Starfall Vein). Run once; they auto-advance each week. *[Server]*
-• `/rotation_seed` — set **this week's** rotating times (City Clash, World Campaign
-  Wed+Sun, Treasure Hunt) from the 01/04/11/19 UTC pool. They then auto-advance one
-  slot per occurrence and auto-ping; Imperial Showdown follows City Clash. Treasure
-  Hunt is forced to 04:00 on DD weeks (cycle continues underneath). *[Server]*
-• `/nweek_setup` — seed the every-N-week windows: **Marauder's Hunt** (2 wks) and
-  **Warrior's Trial** (4 wks), each from its first-occurrence date. Set the start
-  time afterward with `/event_edit`. *[Server]*
+Pings @eRa8; any alliance's R4 may create/edit these. All adds live under one
+**`/event_add`** — pick `type:`.
+• `/event_add type:server` — announce an event **opening** (date range). *[Server]*
+• `/event_add type:custom scope:Server-wide` — recurring/one-time server event (+ duration). *[Server]*
+• `/event_add type:kvk` — multi-day KvK (TME/GE/BC/PC/DD); stages auto-derived from the start date. *[Server]*
+• `/seed event:` — (re)seed **one** recurring event. Rotating series (City Clash,
+  World Campaign, Treasure Hunt) take a `time:` from the 01/04/11/19 UTC pool and
+  auto-advance/auto-ping thereafter (Imperial Showdown follows City Clash; Treasure
+  Hunt forced to 04:00 on DD weeks). Every-N-week windows (Marauder's Hunt, Warrior's
+  Trial, Fallen Frontier) take a first-occurrence `date:`. Fixed series (Starfall Vein)
+  need neither. Re-seeding one never disturbs the others. *[Server]*
 • `/city_clash_target` — set/clear an alliance's **City Clash target cities**
   (`City [Region]; …`, empty = reset to default). Shown in the City Clash alert. *[Server]*
 
 **⚔️ Legions (Wonder Contest / Battle of Dawn) — _any R4_, server-wide**
-• `/legion_slot` — bind a ping role to a time-slot (Sat/Sun × 01:00/11:00/19:00 UTC).
-• `/legion_seed` — declare **this weekend's** event; it alternates WC↔BoD every weekend.
-• `/legion_unseed` — stop pings (for the ~quarterly schedule exceptions).
-• `/legion_status` — show the current seed + which slot roles are set.
-• `/legion_fill` — add members to a slot. Paste a **mix of @mentions/IDs (discord)
+All under one **`/legion action:`**:
+• `action:slot` — bind a ping role to a time-slot (Sat/Sun × 01:00/11:00/19:00 UTC).
+• `action:seed` — declare **this weekend's** event; it alternates WC↔BoD every weekend.
+• `action:unseed` — stop pings (for the ~quarterly schedule exceptions).
+• `action:status` — show the current seed + which slot roles are set.
+• `action:fill` — add members to a slot. Paste a **mix of @mentions/IDs (discord)
   and plain names (non-discord)**; discord users get the slot role, non-discord
   names go on a roster under your alliance. Everyone is moved off any other slot.
-• `/legion_remove` — remove members (discord + non-discord names) from all slots.
-• `/legion_list` — list a slot's members grouped by alliance; filter by `alliance`
+• `action:remove` — remove members (discord + non-discord names) from all slots.
+• `action:list` — list a slot's members grouped by alliance; filter by `alliance`
   and/or `slot`. Non-discord names are marked ◇.
-• `/legion_reset` — clear all slot roles + roster now (same as the Monday auto-reset).
+• `action:reset` — clear all slot roles + roster now (same as the Monday auto-reset).
 Roles + roster auto-empty **Monday 00:00 UTC**; refill Thu/Fri. The bot pings each
 slot **1h before and at start** (40-min window) and the start ping lists the full
 roster (all 4 alliances). Needs **Manage Roles** + the bot's role above the slots.
 
 **🏰 Alliance events — _that alliance's R4 only_ (or Manage Server)**
 Pings that alliance's member role; only its R4 may create/edit.
-• `/alliance_event_add` — leadership actionable at a specific date/time. *[Alliance]*
-• `/event_add` (scope: your alliance) — recurring/one-time alliance event. *[Alliance]*
+• `/event_add type:alliance` — leadership actionable at a specific date/time. *[Alliance]*
+• `/event_add type:custom scope:your alliance` — recurring/one-time alliance event. *[Alliance]*
 
 **✏️ Manage — _R4 of the event's scope_ (or Manage Server)**
 • `/event_edit` — change an event's name, time, duration, or scope. For **Behemoth
@@ -218,26 +230,27 @@ Completed events never appear.
 • **My Alliance Events** button — your alliance's today + tomorrow.
 
 **🔁 Weekly series (rolling)**
-Seeded by `/series_setup`; each shows the **next** date and advances automatically:
+Seeded by `/seed event:<name>`; each shows the **next** date and advances automatically:
 • **Imperial Showdown** — Sundays, except TME weeks (time follows City Clash).
 • **City Clash** — Saturdays. • **World Campaign** — Wednesdays & Sundays (4h).
 • **Treasure Hunt** — Thursdays. • **Starfall Vein** — Wednesdays (fixed times).
 **Rotating-time series** (City Clash, World Campaign, Treasure Hunt, Imperial
-Showdown) cycle through **01/04/11/19 UTC**, one slot per occurrence — seed the
-current week once with `/rotation_seed` and they auto-advance and **ping on their
-own** thereafter (an R4 can still override a single week with `/event_edit`).
-**Starfall Vein** pings on its fixed windows and shows its **· Week N/12** in the
-12-week season. **Treasure Hunt** is forced to **04:00 on weeks our server runs
-Desolate Desert** — the rotation keeps counting, so the next week resumes the cycle.
+Showdown) cycle through **01/04/11/19 UTC**, one slot per occurrence — seed a week
+with `/seed event:<name> time:HH:MM` and it auto-advances and **pings on its own**
+thereafter (an R4 can still override a single week with `/event_edit`). Re-seeding
+one series (e.g. World Campaign) never touches the others. **Starfall Vein** pings
+on its fixed windows and shows **· Week N/12**. **Treasure Hunt** is forced to
+**04:00 on weeks our server runs Desolate Desert** — the rotation keeps counting.
 
 **🗓️ Every-N-week windows**
-Seeded by `/nweek_setup` (first-occurrence date each): **Marauder's Hunt** every
-**2 weeks**, **Warrior's Trial** every **4 weeks** — recurring multi-day windows
-(Tuesday start; length tentative). They show TBD and **don't ping** until an R4
-sets the start time with `/event_edit … time:HH:MM`.
+Seeded by `/seed event:<name> date:<first-occurrence>`: **Marauder's Hunt** every
+**2 weeks**, **Warrior's Trial** every **4 weeks**, **Fallen Frontier** weekly —
+recurring multi-day windows. They're **calendar-only** (shown on the board, one
+reminder ~6h before the window ends, no start ping); each alliance's copy stays
+silent until its R4 sets a day+time with `/event_edit … datetime_:YYYY-MM-DDTHH:MM`.
 
 **ℹ️ Notes**
 • **World Campaign** runs **4 hours** — its events default to a 4h window.
-• For a one-off with a **custom name**, use `/event_add` (Custom… was removed from the curated commands).
+• For a one-off with a **custom name**, use `/event_add type:custom`.
 • The board shows **server-wide** events publicly; alliance events stay private (use the button).
 • This channel auto-clears daily at 00:00 UTC — only this board message persists."""
