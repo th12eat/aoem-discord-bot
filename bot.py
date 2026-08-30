@@ -205,7 +205,34 @@ _RECUR_CHOICES = [app_commands.Choice(name="One-time", value="once"),
                   app_commands.Choice(name="Every other day", value="everyother"),
                   app_commands.Choice(name="Weekly", value="weekly")]
 
+async def _event_add_autocomplete(interaction: discord.Interaction, current: str):
+    """Suggest `event` values based on the chosen `type`: KvK short codes (value=BC,
+    label='Behemoth Conquest (BC)'), curated server events, or alliance events.
+    Free-text `event` isn't a Discord Choice, so this is what makes it selectable."""
+    chosen = getattr(interaction.namespace, "type", None)
+    kind = getattr(chosen, "value", chosen) if chosen is not None else None
+    cur = current.lower()
+    pairs = []  # (label shown, value submitted)
+    if kind == "kvk":
+        pairs = [(lbl, k) for k, lbl in kvk.KVK_CHOICES]
+    elif kind == "server":
+        pairs = [(n, n) for n in catalog.SERVER_EVENTS]
+    elif kind == "alliance":
+        pairs = [(n, n) for n in catalog.ALLIANCE_EVENTS]
+    else:
+        # type not chosen yet (or custom) — offer everything curated so the box isn't empty
+        seen = set()
+        for n in catalog.SERVER_EVENTS + catalog.ALLIANCE_EVENTS:
+            if n not in seen:
+                seen.add(n); pairs.append((n, n))
+        pairs += [(lbl, k) for k, lbl in kvk.KVK_CHOICES]
+    out = [app_commands.Choice(name=lbl[:100], value=val)
+           for lbl, val in pairs if cur in lbl.lower() or cur in val.lower()]
+    return out[:25]
+
+
 @bot.tree.command(name="event_add", description="Add an event: custom / server opening / alliance / KvK (times in UTC).")
+@app_commands.autocomplete(event=_event_add_autocomplete)
 @app_commands.describe(
     type="Which kind of event to add",
     scope="Custom: server-wide or a specific alliance",
