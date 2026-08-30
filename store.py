@@ -223,6 +223,35 @@ def city_clash_targets(guild_id: int) -> dict:
     return guild_config(guild_id).get("city_clash_targets", {})
 
 
+# ── World Campaign Vanguard Marshall reservations ─────────────────────────────
+# Per-guild {alliance: region} — each alliance reserves ONE region's boss. shape:
+#   "wc_vanguard": { "WC1": "Kingsland", "REU": "Gaul", ... }
+# Exclusive: a region is held by at most one alliance (setting it elsewhere moves it).
+def set_wc_vanguard(guild_id: int, alliance: str, region: str | None) -> dict:
+    """Reserve `region` for `alliance` (empty/None clears that alliance's pick).
+    A region is exclusive — assigning it drops it from any other alliance that
+    held it. Returns the full {alliance: region} map."""
+    with _lock:
+        cfg = load_config()
+        g = cfg["guilds"].setdefault(str(guild_id), {})
+        wcv = g.setdefault("wc_vanguard", {})
+        if region:
+            # exclusivity: remove this region from any other alliance first
+            for a in list(wcv):
+                if a != alliance and wcv[a] == region:
+                    del wcv[a]
+            wcv[alliance] = region
+        else:
+            wcv.pop(alliance, None)
+        _write(CONFIG_PATH, cfg)
+        return wcv
+
+
+def wc_vanguard(guild_id: int) -> dict:
+    """This guild's World Campaign Vanguard Marshall reservations ({} if none)."""
+    return guild_config(guild_id).get("wc_vanguard", {})
+
+
 # ── events ───────────────────────────────────────────────────────────────────
 # shape: { "events": [ {id, guild_id, name, schedule{...}, created_by} ] }
 def load_events() -> list[dict]:

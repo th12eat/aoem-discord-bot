@@ -8,10 +8,17 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.13.0"
+VERSION = "1.14.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.14.0 — World Campaign boss reservations**
+• New **`/wc_vanguard`** (R4): each alliance reserves ONE **Vanguard Marshall**
+  (boss) region from the 10 spawns. Exclusive — assigning a region moves it off
+  any alliance that held it. The World Campaign alert now lists ALLIANCE → Region
+  plus a short note: only your first boss kill counts, and hitting another
+  alliance's reserved boss is punished.
 
 **v1.13.0 — Fewer commands + alliance rename**
 • **Alliances renamed:** AGC → **REU** (CourtOfGods), old REU → **FUN** (FunUnited).
@@ -192,6 +199,9 @@ Pings @eRa8; any alliance's R4 may create/edit these. All adds live under one
   need neither. Re-seeding one never disturbs the others. *[Server]*
 • `/city_clash_target` — set/clear an alliance's **City Clash target cities**
   (`City [Region]; …`, empty = reset to default). Shown in the City Clash alert. *[Server]*
+• `/wc_vanguard` — reserve an alliance's **World Campaign Vanguard Marshall** (boss)
+  region — one per alliance, exclusive (leave `region` empty to clear). Shown in the
+  World Campaign alert as ALLIANCE → Region. *[Server]*
 
 **⚔️ Legions (Wonder Contest / Battle of Dawn) — _any R4_, server-wide**
 All under one **`/legion action:`**:

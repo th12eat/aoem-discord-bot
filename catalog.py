@@ -114,6 +114,23 @@ def city_clash_lines(overrides: dict | None = None) -> list[str]:
     return out
 
 
+# World Campaign — Vanguard Marshall (boss) spawns, one per zone (10 regions).
+# Each alliance may RESERVE a single region; the reservation is exclusive (a region
+# belongs to at most one alliance). No catalog default — reservations are set per
+# guild via /wc_vanguard and stored in config.json.
+WC_REGIONS = [
+    "Kingsland", "North Kingsland", "East Kingsland", "West Kingsland", "Eastland",
+    "Tinir", "Neilos", "Olympia", "Gaul", "Kyuno",
+]
+
+
+def world_campaign_lines(reservations: dict | None = None) -> list[str]:
+    """Formatted 'ALLIANCE → Region' lines for the World Campaign alert.
+    `reservations` is a per-guild {alliance: region} map (store.wc_vanguard).
+    Returns [] when nothing is reserved (caller then shows no reservation block)."""
+    return [f"**{tag}** → {region}" for tag, region in (reservations or {}).items() if region]
+
+
 # Weekly legion events — alternate every other week (WC ↔ BoD). 5 legions of
 # 20–30 members each; times are Sat/Sun at fixed windows with a per-time role.
 LEGION_EVENTS = {

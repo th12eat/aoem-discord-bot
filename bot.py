@@ -16,6 +16,7 @@ Admin:
   /event_edit          edit name / time / duration / scope (+ KvK inv/ws times)
   /event_remove        delete an event
   /city_clash_target   set an alliance's City Clash target cities
+  /wc_vanguard         reserve an alliance's World Campaign boss region (1 each)
 Member (ephemeral, scoped to what the viewer may see):
   /event_list /next /today /week
 
@@ -1091,6 +1092,31 @@ async def city_clash_target(interaction: discord.Interaction,
     await interaction.response.send_message(msg, ephemeral=True)
 
 
+# ── /wc_vanguard — reserve an alliance's World Campaign boss region ──────────
+_WC_REGION_CHOICES = [app_commands.Choice(name=r, value=r) for r in catalog.WC_REGIONS]
+
+@bot.tree.command(name="wc_vanguard",
+                  description="Reserve an alliance's World Campaign Vanguard Marshall (boss) region.")
+@app_commands.describe(alliance="Which alliance is reserving",
+                       region="The region whose boss it reserves — leave empty to clear")
+@app_commands.choices(alliance=_ALLIANCE_CHOICES, region=_WC_REGION_CHOICES)
+async def wc_vanguard(interaction: discord.Interaction,
+                      alliance: app_commands.Choice[str],
+                      region: app_commands.Choice[str] | None = None):
+    # World Campaign is server-wide, so any R4 (or Manage Server) may edit the plan
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message(
+            "Only an R4 can change World Campaign reservations.", ephemeral=True)
+    wcv = store.set_wc_vanguard(interaction.guild_id, alliance.value, region.value if region else None)
+    if region:
+        msg = f"✅ **{alliance.value}** reserves the **{region.value}** Vanguard Marshall."
+    else:
+        msg = f"✅ **{alliance.value}** reservation cleared."
+    lines = catalog.world_campaign_lines(wcv)
+    msg += "\n\n**Reservations:**\n" + ("\n".join(lines) if lines else "_(none)_")
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
 # ── display label for a specific occurrence ──────────────────────────────────
 def occ_name(e: dict, dt: datetime) -> str:
     """Legible name for an event AT a specific fire-time. KvK occurrences name the
@@ -1729,6 +1755,15 @@ def _alert_text(e, scope, role_id, when, dt, is_kvk):
         gid = int(e["guild_id"])
         text += "\n\n**Target cities:**\n" + "\n".join(
             catalog.city_clash_lines(store.city_clash_targets(gid)))
+    # World Campaign: append each alliance's reserved Vanguard Marshall region
+    # (only shown when reservations exist), plus the one-kill-counts / hands-off note.
+    if e["name"] == "World Campaign":
+        gid = int(e["guild_id"])
+        lines = catalog.world_campaign_lines(store.wc_vanguard(gid))
+        if lines:
+            text += "\n\n**Reserved Vanguard Marshalls:**\n" + "\n".join(lines)
+            text += ("\n_Only your first boss kill counts for rewards. "
+                     "Attacking another alliance's reserved Vanguard Marshall will be punished._")
     return text
 
 
