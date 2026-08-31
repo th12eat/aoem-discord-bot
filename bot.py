@@ -1930,6 +1930,11 @@ class BoardView(discord.ui.View):
 
     def __init__(self):
         super().__init__(timeout=None)  # persistent across restarts
+        # Link button (outbound URL — no callback) to the Activity Tracker web app.
+        self.add_item(discord.ui.Button(
+            label="Activity Tracker", emoji="⏰",
+            style=discord.ButtonStyle.link,
+            url="https://guillomef06.github.io/activity-tracker/app"))
 
     @discord.ui.button(label="My Alliance Events", emoji="🔎",
                        style=discord.ButtonStyle.primary,
@@ -2162,7 +2167,9 @@ async def refresh_board(guild: discord.Guild):
                f"{_legion_summary(guild.id, now)}"
                f"{block('Today (UTC)', d0s, d0e)}\n\n"
                f"{block('Tomorrow (UTC)', d1s, d1e)}\n\n"
-               f"*In an alliance? Tap **My Alliance Events** below for your own schedule.*")
+               f"*In an alliance? Tap **My Alliance Events** below for your own schedule.*\n\n"
+               f"⏰ **Don't forget to log your scoring for this week's KvK & Legions!** "
+               f"Tap **Activity Tracker** below.")
 
     msg_id = cfg.get("board_message_id")
     try:
