@@ -367,9 +367,14 @@ def invasion_windows(short: str, start: datetime,
     (defend ours AND attack theirs at once); otherwise two separate windows with
     kind 'attack' / 'defense'.
 
-    `atk_time` / `def_time` override the configured HH:MM (per-event edit).
+    `atk_time` / `def_time` override the configured time (per-event edit). Each
+    accepts either `HH:MM` — placed on the default invasion day (the AD stage's
+    last day, i.e. Saturday) — or a full `YYYY-MM-DDTHH:MM`, which pins it to an
+    explicit day (some cycles run the invasion on Friday, not Saturday).
 
     Returns dicts: {start, end, kind ('attack'|'defense'|'both'), time ('HH:MM')}.
+    Attack and Defense merge into one 'both' window only when their start instants
+    coincide (same day AND time) — so a Fri/Sat split stays two windows.
     """
     defn = KVK_DEFS.get(short, {})
     cfg = defn.get("invasion")
@@ -380,21 +385,27 @@ def invasion_windows(short: str, start: datetime,
     stage = next((s for s in compute_stages(short, start) if s["key"] == cfg["stage_key"]), None)
     if stage is None:
         return []
-    # invasion day = the AD stage's last day (day before its exclusive end)
+    # default invasion day = the AD stage's last day (day before its exclusive end)
     inv_day = (stage["end"] - timedelta(days=1)).date() if cfg.get("day") == "last" else stage["start"].date()
     dur = timedelta(minutes=cfg.get("duration", 90))
     atk = atk_time or cfg["attack"]
     dfn = def_time or cfg["defense"]
 
-    def _dt(hhmm):
-        h, m = (int(x) for x in hhmm.split(":"))
+    def _dt(spec):
+        """Parse an invasion spec — 'HH:MM' (→ default inv_day) or an ISO
+        'YYYY-MM-DDTHH:MM' (→ explicit day) — to a UTC datetime."""
+        spec = spec.strip()
+        if "T" in spec:
+            dt = datetime.fromisoformat(spec)
+            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+        h, m = (int(x) for x in spec.split(":"))
         return datetime(inv_day.year, inv_day.month, inv_day.day, h, m, tzinfo=timezone.utc)
 
+    wsa, wsd = _dt(atk), _dt(dfn)
     out = []
-    if atk == dfn:
-        ws = _dt(atk)
-        out.append({"start": ws, "end": ws + dur, "kind": "both", "time": atk})
+    if wsa == wsd:
+        out.append({"start": wsa, "end": wsa + dur, "kind": "both", "time": wsa.strftime("%H:%M")})
     else:
-        wsa = _dt(atk); out.append({"start": wsa, "end": wsa + dur, "kind": "attack", "time": atk})
-        wsd = _dt(dfn); out.append({"start": wsd, "end": wsd + dur, "kind": "defense", "time": dfn})
+        out.append({"start": wsa, "end": wsa + dur, "kind": "attack", "time": wsa.strftime("%H:%M")})
+        out.append({"start": wsd, "end": wsd + dur, "kind": "defense", "time": wsd.strftime("%H:%M")})
     return sorted(out, key=lambda x: x["start"])

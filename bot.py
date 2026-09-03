@@ -1208,8 +1208,8 @@ async def event_remove(interaction: discord.Interaction, event: str):
                        duration="New duration in minutes (optional)",
                        scope="New scope (optional)",
                        scion_first="Behemoth only: which server hosts the FIRST daily Trial of Scion window",
-                       inv_atk="Behemoth only: invasion ATTACK time HH:MM UTC (we invade opponent)",
-                       inv_def="Behemoth only: invasion DEFENSE time HH:MM UTC (they invade us)",
+                       inv_atk="Behemoth only: invasion ATTACK time — HH:MM (Sat) or YYYY-MM-DDTHH:MM UTC (we invade opponent)",
+                       inv_def="Behemoth only: invasion DEFENSE time — HH:MM (Sat) or YYYY-MM-DDTHH:MM UTC (they invade us)",
                        ws2_d2="Primordial only: Day 2 2nd (opponent) Order Workshop time HH:MM UTC",
                        ws2_d3="Primordial only: Day 3 2nd (opponent) Order Workshop time HH:MM UTC",
                        ws2_d4="Primordial only: Day 4 2nd (opponent) Order Workshop time HH:MM UTC")
@@ -1260,11 +1260,17 @@ async def event_edit(interaction: discord.Interaction, event: str,
         if stype != "kvk" or not kvk.KVK_DEFS.get(ev["schedule"].get("short"), {}).get("invasion"):
             return await interaction.response.send_message(
                 "⚠️ `inv_atk`/`inv_def` only apply to **Behemoth Conquest** (invasion times).", ephemeral=True)
+        # Accept `HH:MM` (defaults to the invasion day, Saturday) OR a full
+        # `YYYY-MM-DDTHH:MM` when the invasion falls on another day (e.g. Friday).
+        val = val.strip()
         try:
-            h, m = val.split(":"); assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+            if "T" in val:
+                datetime.fromisoformat(val)
+            else:
+                h, m = val.split(":"); assert 0 <= int(h) < 24 and 0 <= int(m) < 60
         except (ValueError, AssertionError):
             return await interaction.response.send_message(
-                f"⚠️ `{fld}` must be `HH:MM` (24h UTC).", ephemeral=True)
+                f"⚠️ `{fld}` must be `HH:MM` (24h UTC) or `YYYY-MM-DDTHH:MM` for a specific day.", ephemeral=True)
         changes[fld] = val
     # Primordial: per-battle-day 2nd (opponent) Order Workshop times. Merge onto
     # the event's existing ws_second dict {day: "HH:MM"} so days set separately persist.
@@ -1330,10 +1336,13 @@ async def event_edit(interaction: discord.Interaction, event: str,
         kstart = datetime.fromisoformat(updated["schedule"]["start"]).replace(tzinfo=timezone.utc)
         wins = kvk.invasion_windows(updated["schedule"]["short"], kstart,
                                     atk_time=updated.get("inv_atk"), def_time=updated.get("inv_def"))
+        # show the weekday+time so a Fri/Sat split is unambiguous
+        def _fmt(w):
+            return w["start"].strftime("%a %H:%M")
         if len(wins) == 1 and wins[0]["kind"] == "both":
-            extra += f" · 🐘 invasion **{wins[0]['time']} UTC** (Attack & Defense combined)"
+            extra += f" · 🐘 invasion **{_fmt(wins[0])} UTC** (Attack & Defense combined)"
         else:
-            parts = [f"{w['kind']} {w['time']}" for w in wins]
+            parts = [f"{w['kind']} {_fmt(w)}" for w in wins]
             extra += " · 🐘 invasion → " + ", ".join(parts) + " UTC"
     if "ws_second" in changes:
         ws2 = changes["ws_second"]
