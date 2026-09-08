@@ -51,7 +51,7 @@ KVK_DEFS = {
                  "scoring": [
                     "Participate in Starfall Vein 1 time → +3,000,000",
                     "Consume 1h of research speed-ups → +18,000",
-                    "Increase technology power by 1 → +60",
+                    "Increase technology power by 1 → +60 (Research, Facility, or Animal Research upgrades)",
                  ],
                  "prep": "Sign up for Tactical Master (Unit Training) slots for Unit Training on {nextDate}"},
                 {"key": "train",  "title": "Unit Training", "days": 1,
@@ -70,7 +70,7 @@ KVK_DEFS = {
                     "Craft gear — rare +10,000 · epic +30,000 · legendary +200,000",
                     "Kill tribes — Lv.1-4 +4,000 → Lv.29-30 +24,000",
                     "Gather 100 resources (except armories) → +10",
-                    "Building power +1 → +30 · technology power +1 → +60",
+                    "Building power +1 → +30 · technology power +1 → +60 (Research, Facility, or Animal Research upgrades)",
                     "Train/promote units, power +1 → +30",
                  ],
                  "actionable": "Invasion is next — position your marches for the fight"},
