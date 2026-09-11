@@ -26,9 +26,9 @@ KVK_DEFS = {
         "invasion": {
             "stage_key": "inv",   # TME's Invasion stage
             "kind": "siege",
-            "duration": 90,       # minutes
+            "duration": 240,      # the Imperial City fight runs 4 hours
             "day": "start",       # the Invasion stage is a single day
-            "time": "11:00",      # default; override per cycle via /event_edit inv_time
+            "time": "19:00",      # default; override per cycle via /event_edit inv_time
         },
         # Each prep sub-stage carries the exact point-scoring methods for THAT day
         # (`scoring`) and what to do today to be ready for the NEXT stage (`prep`,
@@ -428,3 +428,47 @@ def invasion_windows(short: str, start: datetime,
         out.append({"start": wsa, "end": wsa + dur, "kind": "attack", "time": wsa.strftime("%H:%M")})
         out.append({"start": wsd, "end": wsd + dur, "kind": "defense", "time": wsd.strftime("%H:%M")})
     return sorted(out, key=lambda x: x["start"])
+
+
+# ── TME Imperial City invasion timeline ──────────────────────────────────────
+# The invasion at time T triggers a fixed sequence of notifications. Offsets are
+# in minutes from T (negative = before). Each entry is ONE notification — items
+# that share an offset are one combined message. `slot` picks the staging
+# alliance (1/2/3 → that alliance's role gets pinged); everything else pings the
+# server role. `key` is a stable id used for de-dup + timeline labels.
+TME_INVASION_STEPS = [
+    {"key": "bubble1", "off": -180, "role": "server"},   # T-3h: first warning — bubble up
+    {"key": "bubble2", "off": -120, "role": "server"},   # T-2h: final bubble + enemy teleport-in opens (combined)
+    {"key": "stage1",  "off": -30,  "role": "slot", "slot": 1},   # T-30m: #1 alliance stages in IC tiles
+    {"key": "stage2",  "off": -20,  "role": "slot", "slot": 2},   # T-20m: #2 alliance stages
+    {"key": "stage3",  "off": -10,  "role": "slot", "slot": 3},   # T-10m: #3 alliance stages
+    {"key": "start",   "off": 0,    "role": "server"},   # T: invasion begins
+    {"key": "close",   "off": 240,  "role": "server"},   # T+4h: Imperial City closes if not taken
+    {"key": "tpout",   "off": 360,  "role": "server"},   # T+6h: teleport-out (enemy if defense / us if attack)
+]
+
+
+def tme_invasion_schedule(short, start, inv_time=None):
+    """Absolute-UTC timeline for a TME Imperial City invasion.
+
+    Returns [] unless `short` is a siege-type KvK (TME). Otherwise a list of
+    {key, at (datetime), slot (or None), role ('server'|'slot')} sorted by time,
+    where `at` = invasion start + the step's offset.
+    """
+    defn = KVK_DEFS.get(short, {})
+    cfg = defn.get("invasion")
+    if not cfg or cfg.get("kind") != "siege":
+        return []
+    wins = invasion_windows(short, start, inv_time=inv_time)
+    if not wins:
+        return []
+    t0 = wins[0]["start"]
+    out = []
+    for step in TME_INVASION_STEPS:
+        out.append({
+            "key": step["key"],
+            "at": t0 + timedelta(minutes=step["off"]),
+            "role": step["role"],
+            "slot": step.get("slot"),
+        })
+    return out

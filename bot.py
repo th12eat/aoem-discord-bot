@@ -1210,14 +1210,21 @@ async def event_remove(interaction: discord.Interaction, event: str):
                        scion_first="Behemoth only: which server hosts the FIRST daily Trial of Scion window",
                        inv_atk="Behemoth only: invasion ATTACK time — HH:MM (Sat) or YYYY-MM-DDTHH:MM UTC (we invade opponent)",
                        inv_def="Behemoth only: invasion DEFENSE time — HH:MM (Sat) or YYYY-MM-DDTHH:MM UTC (they invade us)",
-                       inv_time="TME only: Imperial City invasion time — HH:MM or YYYY-MM-DDTHH:MM UTC",
+                       inv_time="TME only: Imperial City invasion time — HH:MM or YYYY-MM-DDTHH:MM UTC (default 19:00)",
+                       inv_side="TME only: are we defending our IC or attacking theirs? (default defense)",
+                       inv_a1="TME only: 1st staging alliance (T-30m) — default eRa",
+                       inv_a2="TME only: 2nd staging alliance (T-20m) — default REU",
+                       inv_a3="TME only: 3rd staging alliance (T-10m) — default Myt",
                        ws2_d2="Primordial only: Day 2 2nd (opponent) Order Workshop time HH:MM UTC",
                        ws2_d3="Primordial only: Day 3 2nd (opponent) Order Workshop time HH:MM UTC",
                        ws2_d4="Primordial only: Day 4 2nd (opponent) Order Workshop time HH:MM UTC")
 @app_commands.autocomplete(event=_remove_autocomplete)  # same picker: events you may admin
 @app_commands.choices(scope=_SCOPE_CHOICES,
                       scion_first=[app_commands.Choice(name="Our server (#008) — default", value="ours"),
-                                   app_commands.Choice(name="Opponent server", value="theirs")])
+                                   app_commands.Choice(name="Opponent server", value="theirs")],
+                      inv_side=[app_commands.Choice(name="Defense (defend our IC)", value="defense"),
+                                app_commands.Choice(name="Attack (invade their IC)", value="attack")],
+                      inv_a1=_ALLIANCE_CHOICES, inv_a2=_ALLIANCE_CHOICES, inv_a3=_ALLIANCE_CHOICES)
 async def event_edit(interaction: discord.Interaction, event: str,
                      name: str | None = None, time: str | None = None,
                      datetime_: str | None = None, duration: int | None = None,
@@ -1225,6 +1232,10 @@ async def event_edit(interaction: discord.Interaction, event: str,
                      scion_first: app_commands.Choice[str] | None = None,
                      inv_atk: str | None = None, inv_def: str | None = None,
                      inv_time: str | None = None,
+                     inv_side: app_commands.Choice[str] | None = None,
+                     inv_a1: app_commands.Choice[str] | None = None,
+                     inv_a2: app_commands.Choice[str] | None = None,
+                     inv_a3: app_commands.Choice[str] | None = None,
                      ws2_d2: str | None = None, ws2_d3: str | None = None, ws2_d4: str | None = None):
     ev = next((e for e in store.events_for_guild(interaction.guild_id) if e["id"] == event.strip()), None)
     if ev is None:
@@ -1289,6 +1300,23 @@ async def event_edit(interaction: discord.Interaction, event: str,
             return await interaction.response.send_message(
                 "⚠️ `inv_time` must be `HH:MM` (24h UTC) or `YYYY-MM-DDTHH:MM` for a specific day.", ephemeral=True)
         changes["inv_time"] = v
+    # TME invasion side + staging alliances (all siege-only).
+    if inv_side is not None or inv_a1 is not None or inv_a2 is not None or inv_a3 is not None:
+        if not _inv_cfg or _inv_cfg.get("kind") != "siege":
+            return await interaction.response.send_message(
+                "⚠️ `inv_side`/`inv_a1`/`inv_a2`/`inv_a3` only apply to **The Mightiest Empire**.", ephemeral=True)
+        if inv_side is not None:
+            changes["inv_side"] = inv_side.value
+        # staging alliances: merge onto existing (or the default trio) so any one
+        # can be set independently; reject duplicates so all three stage distinctly.
+        cur = list(ev.get("inv_alliances") or _TME_DEFAULT_ALLIANCES)
+        for i, choice in enumerate((inv_a1, inv_a2, inv_a3)):
+            if choice is not None:
+                cur[i] = choice.value
+        if len(set(cur)) != 3:
+            return await interaction.response.send_message(
+                "⚠️ The three staging alliances must be distinct.", ephemeral=True)
+        changes["inv_alliances"] = cur
     # Primordial: per-battle-day 2nd (opponent) Order Workshop times. Merge onto
     # the event's existing ws_second dict {day: "HH:MM"} so days set separately persist.
     ws2_in = {2: ws2_d2, 3: ws2_d3, 4: ws2_d4}
@@ -1362,11 +1390,15 @@ async def event_edit(interaction: discord.Interaction, event: str,
         else:
             parts = [f"{w['kind']} {_fmt(w)}" for w in wins]
             extra += " · 🐘 invasion → " + ", ".join(parts) + " UTC"
-    if "inv_time" in changes:
+    if any(k in changes for k in ("inv_time", "inv_side", "inv_alliances")):
         kstart = datetime.fromisoformat(updated["schedule"]["start"]).replace(tzinfo=timezone.utc)
         wins = kvk.invasion_windows(updated["schedule"]["short"], kstart, inv_time=updated.get("inv_time"))
+        side = _tme_side(updated)
+        keys = _tme_alliance_keys(updated)
         if wins:
-            extra += f" · ⚔️ Imperial City invasion **{wins[0]['start'].strftime('%a %H:%M')} UTC**"
+            extra += (f" · ⚔️ Imperial City invasion **{wins[0]['start'].strftime('%a %H:%M')} UTC** "
+                      f"({'DEFENSE' if side=='defense' else 'ATTACK'}) · staging: "
+                      + " → ".join(keys))
     if "ws_second" in changes:
         ws2 = changes["ws_second"]
         setd = ", ".join(f"D{d} {ws2[str(d)]}" for d in (2, 3, 4) if str(d) in ws2) or "none"
@@ -1602,6 +1634,33 @@ async def scheduler_tick():
                         continue
                     _alert_now[okey] = (channel.id, msg.id, w["end"])
 
+            # ── TME Imperial City invasion timeline (siege) ──
+            #   A fixed sequence of single notifications (bubble-up ×2, staggered
+            #   alliance staging, invasion start, close, teleport-out). No T-1h
+            #   pings; each notice carries the remaining timeline. Staging steps
+            #   ping that alliance's role; everything else pings the server role.
+            if is_kvk:
+                short = e["schedule"]["short"]
+                kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+                tme_steps = kvk.tme_invasion_schedule(short, kstart, inv_time=e.get("inv_time"))
+                for st in tme_steps:
+                    if st["at"] != now:
+                        continue
+                    okey = f"tmeinv|{e['id']}|{st['key']}|{st['at'].isoformat()}"
+                    if okey in _fired:
+                        continue
+                    _fired.add(okey)
+                    if st["role"] == "slot":
+                        keys = _tme_alliance_keys(e)
+                        ping = _tme_alliance_mention(guild.id, keys[st["slot"] - 1])
+                    else:
+                        ping = f"<@&{role_id}>"
+                    text = _tme_invasion_text(e, guild.id, tme_steps, st["key"], ping)
+                    try:
+                        await channel.send(text)
+                    except discord.DiscordException as ex:
+                        log.error("TME invasion alert send failed: %s", ex)
+
             # ── Behemoth invasion windows (Attack/Defense stage) ──
             #   Each window pings T-1h AND at start; the 1h ping is deleted when the
             #   start fires, and the start ping self-deletes after the 90-min window.
@@ -1612,6 +1671,8 @@ async def scheduler_tick():
                 for w in kvk.invasion_windows(short, kstart,
                                               atk_time=e.get("inv_atk"), def_time=e.get("inv_def"),
                                               inv_time=e.get("inv_time")):
+                    if w["kind"] == "siege":
+                        continue  # TME siege is handled by the timeline block above
                     for offset, when in ((60, "in 1 hour"), (0, "starting now")):
                         if w["start"] - timedelta(minutes=offset) != now:
                             continue
@@ -1752,9 +1813,15 @@ def _kvk_stage_body(e, short, stages, idx, header):
             wins = []
         if wins and wins[0]["kind"] == "siege":
             w = wins[0]
-            lines.append(f"\n**⚔️ Imperial City invasion:** {ts_both(w['start'])} · 90 min")
-            lines.append("**Where to be:** see the invasion map on the TME dashboard for tower/gate assignments.")
-            lines.append("_Alerts fire 1 hour before and at the window._")
+            side = _tme_side(e)
+            lines.append(f"\n**⚔️ Imperial City invasion — {'DEFENSE' if side=='defense' else 'ATTACK'}:** {ts_both(w['start'])} · 4-hour fight")
+            steps = kvk.tme_invasion_schedule(short, kstart, inv_time=e.get("inv_time"))
+            if steps:
+                lines.append("**Timeline (UTC):**")
+                for s in steps:
+                    lines.append("• " + _tme_step_line(s["key"], None, e, s["at"]))
+            lines.append(f"Full plan + tower/gate assignments: {_TME_MAP_LINK}")
+            lines.append("_Each step posts its own alert (no separate 1-hour ping)._")
         elif wins:
             lines.append("\n**🐘 Invasion window" + ("s" if len(wins) > 1 else "") + ":**")
             for w in wins:
@@ -1828,6 +1895,78 @@ def _scion_alert_text(e, role_id, w):
 # consistent across the 1h-before ping, the at-time ping, and the stage notice.
 _INVASION_ROLES = ("**WC1** takes both servers (attack **and** defend); "
                    "**REU / FUN / MyT** stay on **our server** rallying the Elephant.")
+
+
+# TME command-center map, shown as a friendly link in invasion pings.
+_TME_MAP_URL = "https://th12eat.github.io/aoem-dashboard/dashboards/tme_command_center.html"
+_TME_MAP_LINK = f"[invasion map]({_TME_MAP_URL})"
+# Default staging order (alliance keys) when an event hasn't set its own.
+_TME_DEFAULT_ALLIANCES = ["WC1", "REU", "MyT"]   # in-game tags: eRa, REU, Myt
+
+
+def _tme_alliance_keys(e):
+    a = e.get("inv_alliances")
+    if isinstance(a, list) and len(a) == 3:
+        return a
+    return list(_TME_DEFAULT_ALLIANCES)
+
+
+def _tme_side(e):
+    return e.get("inv_side") if e.get("inv_side") in ("attack", "defense") else "defense"
+
+
+def _tme_alliance_mention(guild_id, key):
+    """Role mention for an alliance's member role, or the bare key if unset.
+    guild_id None (or no role configured) → the alliance key in bold (no ping),
+    used for the static day-of briefing so it doesn't mass-ping."""
+    if guild_id:
+        rid = store.alliance_roles(guild_id, key).get("member_role_id")
+        if rid:
+            return f"<@&{rid}>"
+    return f"**{key}**"
+
+
+def _tme_step_line(step_key, guild_id, e, at):
+    """One line describing a single timeline step (used both as the headline of
+    that step's own notice and as a row in the remaining-timeline list)."""
+    keys = _tme_alliance_keys(e)
+    side = _tme_side(e)
+    theirs_ours = "our server" if side == "defense" else "the enemy server"
+    who_out = "enemy players are teleported out" if side == "defense" else "we are teleported out"
+    t = ts(at, "t")
+    if step_key == "bubble1":
+        return f"🛡️ **{t} — Bubble up.** Shields on before enemy teleports open."
+    if step_key == "bubble2":
+        return (f"🛡️➡️ **{t} — Final bubble check + enemy teleport-in opens.** Enemies can now teleport "
+                f"onto {theirs_ours} (non–Imperial City tiles). Stay bubbled unless rallying.")
+    if step_key == "stage1":
+        return f"📍 **{t} — {_tme_alliance_mention(guild_id, keys[0])} stage in the Imperial City tiles** (per the {_TME_MAP_LINK})."
+    if step_key == "stage2":
+        return f"📍 **{t} — {_tme_alliance_mention(guild_id, keys[1])} stage in the Imperial City tiles** (per the {_TME_MAP_LINK})."
+    if step_key == "stage3":
+        return f"📍 **{t} — {_tme_alliance_mention(guild_id, keys[2])} stage in the Imperial City tiles** (per the {_TME_MAP_LINK})."
+    if step_key == "start":
+        verb = "Defend" if side == "defense" else "Attack"
+        return f"⚔️ **{t} — INVASION BEGINS.** {verb} the Imperial City — follow the {_TME_MAP_LINK}."
+    if step_key == "close":
+        return f"🏁 **{t} — Imperial City closes** (if it hasn't already been taken)."
+    if step_key == "tpout":
+        return f"↩️ **{t} — {who_out[:1].upper()+who_out[1:]}.**"
+    return f"**{t} — {step_key}**"
+
+
+def _tme_invasion_text(e, guild_id, steps, cur_key, role_mention):
+    """Full message for one TME invasion notification: the current step's headline,
+    then the remaining timeline (this step + everything after it)."""
+    # index of the current step within the ordered schedule
+    order = [s["key"] for s in steps]
+    ci = order.index(cur_key) if cur_key in order else 0
+    head = _tme_step_line(cur_key, guild_id, e, steps[ci]["at"])
+    lines = [f"{role_mention} {head}" if role_mention else head, "", "**Timeline (UTC):**"]
+    for s in steps[ci:]:
+        mark = "▶ " if s["key"] == cur_key else "• "
+        lines.append(mark + _tme_step_line(s["key"], guild_id, e, s["at"]))
+    return "\n".join(lines)
 
 
 def _invasion_alert_text(e, role_id, w, when):
