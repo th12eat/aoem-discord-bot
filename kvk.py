@@ -18,6 +18,18 @@ from datetime import datetime, timedelta, timezone
 KVK_DEFS = {
     "TME": {
         "name": "The Mightiest Empire",
+        # Single Imperial City invasion (one 90-min window on the Invasion day),
+        # unlike Behemoth's dual attack/defense. kind="siege" → one window whose
+        # time defaults to 11:00 UTC and is set per cycle via /event_edit inv_time.
+        # We attack OR defend the IC depending on the prep outcome (shown on the
+        # dashboard); the ping is neutral about which.
+        "invasion": {
+            "stage_key": "inv",   # TME's Invasion stage
+            "kind": "siege",
+            "duration": 90,       # minutes
+            "day": "start",       # the Invasion stage is a single day
+            "time": "11:00",      # default; override per cycle via /event_edit inv_time
+        },
         # Each prep sub-stage carries the exact point-scoring methods for THAT day
         # (`scoring`) and what to do today to be ready for the NEXT stage (`prep`,
         # which may reference `{nextDate}` — the coming stage's date). `king` notes
@@ -76,7 +88,8 @@ KVK_DEFS = {
                  "actionable": "Invasion is next — position your marches for the fight"},
             ]},
             {"key": "inv", "title": "Invasion", "days": 1,
-             "summary": "Attack or Defend the Imperial City", "actionable": "Fight at the invasion time"},
+             "summary": "Attack or Defend the Imperial City",
+             "actionable": "Be online for the invasion window — follow the tower/gate plan on the TME dashboard"},
         ],
     },
     "GE": {
@@ -358,7 +371,8 @@ def workshop_windows(short: str, start: datetime, second_times: dict | None = No
 
 
 def invasion_windows(short: str, start: datetime,
-                     atk_time: str | None = None, def_time: str | None = None) -> list[dict]:
+                     atk_time: str | None = None, def_time: str | None = None,
+                     inv_time: str | None = None) -> list[dict]:
     """Behemoth invasion windows (Attack/Defense stage), as absolute UTC datetimes.
 
     Only KvKs with an `invasion` config (Behemoth Conquest) produce windows.
@@ -388,8 +402,6 @@ def invasion_windows(short: str, start: datetime,
     # default invasion day = the AD stage's last day (day before its exclusive end)
     inv_day = (stage["end"] - timedelta(days=1)).date() if cfg.get("day") == "last" else stage["start"].date()
     dur = timedelta(minutes=cfg.get("duration", 90))
-    atk = atk_time or cfg["attack"]
-    dfn = def_time or cfg["defense"]
 
     def _dt(spec):
         """Parse an invasion spec — 'HH:MM' (→ default inv_day) or an ISO
@@ -401,6 +413,13 @@ def invasion_windows(short: str, start: datetime,
         h, m = (int(x) for x in spec.split(":"))
         return datetime(inv_day.year, inv_day.month, inv_day.day, h, m, tzinfo=timezone.utc)
 
+    # Single Imperial City siege (TME): one window, attack-or-defend (kind='siege').
+    if cfg.get("kind") == "siege":
+        ws = _dt(inv_time or cfg["time"])
+        return [{"start": ws, "end": ws + dur, "kind": "siege", "time": ws.strftime("%H:%M")}]
+
+    atk = atk_time or cfg["attack"]
+    dfn = def_time or cfg["defense"]
     wsa, wsd = _dt(atk), _dt(dfn)
     out = []
     if wsa == wsd:

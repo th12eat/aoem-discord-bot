@@ -1210,6 +1210,7 @@ async def event_remove(interaction: discord.Interaction, event: str):
                        scion_first="Behemoth only: which server hosts the FIRST daily Trial of Scion window",
                        inv_atk="Behemoth only: invasion ATTACK time — HH:MM (Sat) or YYYY-MM-DDTHH:MM UTC (we invade opponent)",
                        inv_def="Behemoth only: invasion DEFENSE time — HH:MM (Sat) or YYYY-MM-DDTHH:MM UTC (they invade us)",
+                       inv_time="TME only: Imperial City invasion time — HH:MM or YYYY-MM-DDTHH:MM UTC",
                        ws2_d2="Primordial only: Day 2 2nd (opponent) Order Workshop time HH:MM UTC",
                        ws2_d3="Primordial only: Day 3 2nd (opponent) Order Workshop time HH:MM UTC",
                        ws2_d4="Primordial only: Day 4 2nd (opponent) Order Workshop time HH:MM UTC")
@@ -1223,6 +1224,7 @@ async def event_edit(interaction: discord.Interaction, event: str,
                      scope: app_commands.Choice[str] | None = None,
                      scion_first: app_commands.Choice[str] | None = None,
                      inv_atk: str | None = None, inv_def: str | None = None,
+                     inv_time: str | None = None,
                      ws2_d2: str | None = None, ws2_d3: str | None = None, ws2_d4: str | None = None):
     ev = next((e for e in store.events_for_guild(interaction.guild_id) if e["id"] == event.strip()), None)
     if ev is None:
@@ -1254,12 +1256,13 @@ async def event_edit(interaction: discord.Interaction, event: str,
         # Config default = first window ("01:00") on "ours"; flip when they host first.
         default_first = kvk.KVK_DEFS[ev["schedule"]["short"]]["scion"]["windows"][0]["server"]
         changes["scion_flip"] = (scion_first.value != default_first)
+    _inv_cfg = kvk.KVK_DEFS.get(ev["schedule"].get("short"), {}).get("invasion") if stype == "kvk" else None
     for fld, val in (("inv_atk", inv_atk), ("inv_def", inv_def)):
         if val is None:
             continue
-        if stype != "kvk" or not kvk.KVK_DEFS.get(ev["schedule"].get("short"), {}).get("invasion"):
+        if not _inv_cfg or _inv_cfg.get("kind") == "siege":
             return await interaction.response.send_message(
-                "⚠️ `inv_atk`/`inv_def` only apply to **Behemoth Conquest** (invasion times).", ephemeral=True)
+                "⚠️ `inv_atk`/`inv_def` only apply to **Behemoth Conquest** (dual invasion times).", ephemeral=True)
         # Accept `HH:MM` (defaults to the invasion day, Saturday) OR a full
         # `YYYY-MM-DDTHH:MM` when the invasion falls on another day (e.g. Friday).
         val = val.strip()
@@ -1272,6 +1275,20 @@ async def event_edit(interaction: discord.Interaction, event: str,
             return await interaction.response.send_message(
                 f"⚠️ `{fld}` must be `HH:MM` (24h UTC) or `YYYY-MM-DDTHH:MM` for a specific day.", ephemeral=True)
         changes[fld] = val
+    if inv_time is not None:
+        if not _inv_cfg or _inv_cfg.get("kind") != "siege":
+            return await interaction.response.send_message(
+                "⚠️ `inv_time` only applies to **The Mightiest Empire** (Imperial City invasion time).", ephemeral=True)
+        v = inv_time.strip()
+        try:
+            if "T" in v:
+                datetime.fromisoformat(v)
+            else:
+                h, m = v.split(":"); assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+        except (ValueError, AssertionError):
+            return await interaction.response.send_message(
+                "⚠️ `inv_time` must be `HH:MM` (24h UTC) or `YYYY-MM-DDTHH:MM` for a specific day.", ephemeral=True)
+        changes["inv_time"] = v
     # Primordial: per-battle-day 2nd (opponent) Order Workshop times. Merge onto
     # the event's existing ws_second dict {day: "HH:MM"} so days set separately persist.
     ws2_in = {2: ws2_d2, 3: ws2_d3, 4: ws2_d4}
@@ -1335,7 +1352,8 @@ async def event_edit(interaction: discord.Interaction, event: str,
     if "inv_atk" in changes or "inv_def" in changes:
         kstart = datetime.fromisoformat(updated["schedule"]["start"]).replace(tzinfo=timezone.utc)
         wins = kvk.invasion_windows(updated["schedule"]["short"], kstart,
-                                    atk_time=updated.get("inv_atk"), def_time=updated.get("inv_def"))
+                                    atk_time=updated.get("inv_atk"), def_time=updated.get("inv_def"),
+                                    inv_time=updated.get("inv_time"))
         # show the weekday+time so a Fri/Sat split is unambiguous
         def _fmt(w):
             return w["start"].strftime("%a %H:%M")
@@ -1344,6 +1362,11 @@ async def event_edit(interaction: discord.Interaction, event: str,
         else:
             parts = [f"{w['kind']} {_fmt(w)}" for w in wins]
             extra += " · 🐘 invasion → " + ", ".join(parts) + " UTC"
+    if "inv_time" in changes:
+        kstart = datetime.fromisoformat(updated["schedule"]["start"]).replace(tzinfo=timezone.utc)
+        wins = kvk.invasion_windows(updated["schedule"]["short"], kstart, inv_time=updated.get("inv_time"))
+        if wins:
+            extra += f" · ⚔️ Imperial City invasion **{wins[0]['start'].strftime('%a %H:%M')} UTC**"
     if "ws_second" in changes:
         ws2 = changes["ws_second"]
         setd = ", ".join(f"D{d} {ws2[str(d)]}" for d in (2, 3, 4) if str(d) in ws2) or "none"
@@ -1587,7 +1610,8 @@ async def scheduler_tick():
                 short = e["schedule"]["short"]
                 kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
                 for w in kvk.invasion_windows(short, kstart,
-                                              atk_time=e.get("inv_atk"), def_time=e.get("inv_def")):
+                                              atk_time=e.get("inv_atk"), def_time=e.get("inv_def"),
+                                              inv_time=e.get("inv_time")):
                     for offset, when in ((60, "in 1 hour"), (0, "starting now")):
                         if w["start"] - timedelta(minutes=offset) != now:
                             continue
@@ -1723,10 +1747,15 @@ def _kvk_stage_body(e, short, stages, idx, header):
     if inv_cfg and stage.get("key") == inv_cfg.get("stage_key"):
         try:
             kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
-            wins = kvk.invasion_windows(short, kstart, atk_time=e.get("inv_atk"), def_time=e.get("inv_def"))
+            wins = kvk.invasion_windows(short, kstart, atk_time=e.get("inv_atk"), def_time=e.get("inv_def"), inv_time=e.get("inv_time"))
         except (ValueError, KeyError):
             wins = []
-        if wins:
+        if wins and wins[0]["kind"] == "siege":
+            w = wins[0]
+            lines.append(f"\n**⚔️ Imperial City invasion:** {ts_both(w['start'])} · 90 min")
+            lines.append("**Where to be:** see the invasion map on the TME dashboard for tower/gate assignments.")
+            lines.append("_Alerts fire 1 hour before and at the window._")
+        elif wins:
             lines.append("\n**🐘 Invasion window" + ("s" if len(wins) > 1 else "") + ":**")
             for w in wins:
                 label = {"both": "Attack **&** Defense (combined)",
@@ -1802,13 +1831,27 @@ _INVASION_ROLES = ("**WC1** takes both servers (attack **and** defend); "
 
 
 def _invasion_alert_text(e, role_id, w, when):
-    """A Behemoth invasion ping. `w` is a window dict from kvk.invasion_windows();
-    `when` is 'in 1 hour' or 'starting now'. Combined windows (kind='both') fire a
-    single Attack & Defense message instead of separate offense/defense ones."""
+    """An invasion ping. `w` is a window dict from kvk.invasion_windows();
+    `when` is 'in 1 hour' or 'starting now'. Behemoth uses kind attack/defense/both;
+    TME uses kind='siege' (one Imperial City fight, attack-or-defend)."""
     dur = int((w["end"] - w["start"]).total_seconds() // 60)
     kind = w["kind"]
     live = when == "starting now"
     head_state = "LIVE now" if live else f"in 1 hour ({ts(w['start'], 't')})"
+    if kind == "siege":
+        title = f"⚔️🏰 **TME Invasion — Imperial City {head_state}**"
+        gist = ("The Imperial City invasion is a single 90-min fight — attack or defend the IC "
+                "per the plan on the dashboard. Whoever holds/scores most wins.")
+        lines = [
+            f"<@&{role_id}> {title} — {ts_both(w['start'])}",
+            f"_{gist}_",
+            f"**Where to be:** see the invasion map on the TME dashboard for tower/gate assignments.",
+        ]
+        if live:
+            lines.append(f"⏳ Window closes {ts(w['end'], 'R')}.")
+        else:
+            lines.append("Get ready — position marches, top up rally troops, and line up rally leaders per the map.")
+        return "\n".join(lines)
     if kind == "both":
         title = f"🐘⚔️🛡️ **Behemoth Invasion — ATTACK & DEFENSE {head_state}**"
         gist = ("Both invasions hit at once (90 min): the enemy Behemoth invades **our server** "
@@ -2129,10 +2172,13 @@ def _invasion_board_rows(events: list[dict], start: datetime, end: datetime) -> 
             kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
         except (ValueError, KeyError):
             continue
-        for w in kvk.invasion_windows(s["short"], kstart, atk_time=e.get("inv_atk"), def_time=e.get("inv_def")):
+        for w in kvk.invasion_windows(s["short"], kstart, atk_time=e.get("inv_atk"), def_time=e.get("inv_def"), inv_time=e.get("inv_time")):
             if start <= w["start"] <= end:
-                label = {"both": "Attack & Defense", "attack": "Attack", "defense": "Defense"}[w["kind"]]
-                rows.append(f"• {ts(w['start'],'t')} — 🐘 **Behemoth Invasion** · {label} ({ts(w['start'],'R')})")
+                if w["kind"] == "siege":
+                    rows.append(f"• {ts(w['start'],'t')} — ⚔️ **TME Invasion** · Imperial City ({ts(w['start'],'R')})")
+                else:
+                    label = {"both": "Attack & Defense", "attack": "Attack", "defense": "Defense"}[w["kind"]]
+                    rows.append(f"• {ts(w['start'],'t')} — 🐘 **Behemoth Invasion** · {label} ({ts(w['start'],'R')})")
     return rows
 
 
