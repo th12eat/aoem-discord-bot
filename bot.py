@@ -80,6 +80,10 @@ _fired: set[str] = set()
 #                         alert (deleted once the event's duration elapses)
 _alert_1h: dict[str, int] = {}
 _alert_now: dict[str, tuple[int, int, datetime]] = {}
+#   _tme_inv_last[event_id] = (channel_id, message_id) of the most recent TME
+#   invasion-timeline notice — deleted when the next step for that event fires,
+#   so the channel shows only the current step instead of all 8 lingering.
+_tme_inv_last: dict[str, tuple[int, int]] = {}
 # last minute the scheduler processed (UTC, second/micro zeroed). Used to catch
 # up any target minute skipped by @tasks.loop drift, so a once-a-week ping can't
 # be lost just because a tick landed a few seconds off the exact minute.
@@ -1656,8 +1660,20 @@ async def scheduler_tick():
                     else:
                         ping = f"<@&{role_id}>"
                     text = _tme_invasion_text(e, guild.id, tme_steps, st["key"], ping)
+                    # delete this event's previous timeline notice so the channel
+                    # only ever shows the current step (not all 8 lingering).
+                    prev = _tme_inv_last.pop(e["id"], None)
+                    if prev:
+                        pch = guild.get_channel(prev[0])
+                        if pch:
+                            try:
+                                pm = await pch.fetch_message(prev[1])
+                                await pm.delete()
+                            except discord.DiscordException:
+                                pass
                     try:
-                        await channel.send(text)
+                        msg = await channel.send(text)
+                        _tme_inv_last[e["id"]] = (channel.id, msg.id)
                     except discord.DiscordException as ex:
                         log.error("TME invasion alert send failed: %s", ex)
 
