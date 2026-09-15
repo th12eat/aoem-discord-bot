@@ -321,16 +321,17 @@ def scion_windows(short: str, start: datetime, flip: bool = False) -> list[dict]
     return sorted(out, key=lambda x: x["start"])
 
 
-def workshop_windows(short: str, start: datetime, second_times: dict | None = None) -> list[dict]:
+def workshop_windows(short: str, start: datetime, second_times: dict | None = None,
+                     first_time: str | None = None) -> list[dict]:
     """Order Workshop contest windows (Primordial Conflict, Battle Stage), as
     absolute UTC datetimes.
 
     Only KvKs with a `workshop` config produce windows. Two contests per battle
-    day: the FIRST is always our server at the configured `first_time` (19:00
-    UTC, guaranteed); the SECOND is the opponent's, whose time varies and is
-    unknown until set — pass it per battle-day-number in `second_times`, e.g.
-    {2: "11:00", 3: "01:00"}. A day with no second time yields only its first
-    window (the guaranteed one).
+    day: the FIRST is OUR server's, defaulting to the configured `first_time`
+    (19:00 UTC) but overridable via `first_time` if we move it; the SECOND is the
+    opponent's, whose time varies and is unknown until set — pass it per
+    battle-day-number in `second_times`, e.g. {2: "11:00", 3: "01:00"}. A day
+    with no second time yields only its first window (ours).
 
     Returns dicts: {start, end, kind ('ours'|'theirs'), day (2..4), time ('HH:MM')}.
     """
@@ -344,6 +345,7 @@ def workshop_windows(short: str, start: datetime, second_times: dict | None = No
     if stage is None:
         return []
     second_times = second_times or {}
+    ours_time = first_time or cfg["first_time"]
     dur = timedelta(minutes=cfg.get("duration", 60))
 
     def _dt(day_date, hhmm):
@@ -357,9 +359,9 @@ def workshop_windows(short: str, start: datetime, second_times: dict | None = No
     last = stage["end"].date()  # exclusive
     event_day = 2
     while day < last:
-        # first (ours) — always 19:00 UTC
-        ws = _dt(day, cfg["first_time"])
-        out.append({"start": ws, "end": ws + dur, "kind": "ours", "day": event_day, "time": cfg["first_time"]})
+        # first (ours) — default 19:00 UTC, or the per-event override
+        ws = _dt(day, ours_time)
+        out.append({"start": ws, "end": ws + dur, "kind": "ours", "day": event_day, "time": ours_time})
         # second (theirs) — only if a time has been set for this battle day
         t2 = second_times.get(event_day) or second_times.get(str(event_day))
         if t2:

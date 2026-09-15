@@ -1221,6 +1221,7 @@ async def event_remove(interaction: discord.Interaction, event: str):
                        inv_a3="TME only: 3rd staging alliance (T-10m) — default Myt",
                        ws2_d2="Primordial only: Day 2 2nd (opponent) Order Workshop time HH:MM UTC",
                        ws2_d3="Primordial only: Day 3 2nd (opponent) Order Workshop time HH:MM UTC",
+                       ws_time="Primordial only: OUR Order Workshop time HH:MM UTC (default 19:00)",
                        ws2_d4="Primordial only: Day 4 2nd (opponent) Order Workshop time HH:MM UTC")
 @app_commands.autocomplete(event=_remove_autocomplete)  # same picker: events you may admin
 @app_commands.choices(scope=_SCOPE_CHOICES,
@@ -1240,6 +1241,7 @@ async def event_edit(interaction: discord.Interaction, event: str,
                      inv_a1: app_commands.Choice[str] | None = None,
                      inv_a2: app_commands.Choice[str] | None = None,
                      inv_a3: app_commands.Choice[str] | None = None,
+                     ws_time: str | None = None,
                      ws2_d2: str | None = None, ws2_d3: str | None = None, ws2_d4: str | None = None):
     ev = next((e for e in store.events_for_guild(interaction.guild_id) if e["id"] == event.strip()), None)
     if ev is None:
@@ -1339,6 +1341,17 @@ async def event_edit(interaction: discord.Interaction, event: str,
                     f"⚠️ `ws2_d{day}` must be `HH:MM` (24h UTC).", ephemeral=True)
             merged[str(day)] = val
         changes["ws_second"] = merged
+    if ws_time is not None:
+        if stype != "kvk" or not kvk.KVK_DEFS.get(ev["schedule"].get("short"), {}).get("workshop"):
+            return await interaction.response.send_message(
+                "⚠️ `ws_time` only applies to **Primordial Conflict** (our Order Workshop time).", ephemeral=True)
+        v = ws_time.strip()
+        try:
+            h, m = v.split(":"); assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+        except (ValueError, AssertionError):
+            return await interaction.response.send_message(
+                "⚠️ `ws_time` must be `HH:MM` (24h UTC).", ephemeral=True)
+        changes["ws_time"] = v
     if time:
         # accept one or more comma-separated HH:MM (a series occurrence can have
         # several, e.g. Starfall Vein's four windows)
@@ -1403,10 +1416,13 @@ async def event_edit(interaction: discord.Interaction, event: str,
             extra += (f" · ⚔️ Imperial City invasion **{wins[0]['start'].strftime('%a %H:%M')} UTC** "
                       f"({'DEFENSE' if side=='defense' else 'ATTACK'}) · staging: "
                       + " → ".join(keys))
+    if "ws_time" in changes:
+        extra += f" · 🔧 our workshop → **{changes['ws_time']} UTC**"
     if "ws_second" in changes:
         ws2 = changes["ws_second"]
         setd = ", ".join(f"D{d} {ws2[str(d)]}" for d in (2, 3, 4) if str(d) in ws2) or "none"
-        extra += f" · 🔧 2nd workshop → {setd} UTC (1st always 19:00)"
+        our_ws = (updated.get("ws_time") or "19:00")
+        extra += f" · 🔧 2nd workshop → {setd} UTC (ours {our_ws})"
     await interaction.response.send_message(
         f"✏️ Updated **{updated['name']}** (`{updated['id']}`) — {describe_schedule(updated['schedule'])}"
         + (f" · {updated.get('duration')}min" if updated.get('duration') else "") + extra,
@@ -1716,14 +1732,14 @@ async def scheduler_tick():
                             _alert_now[okey] = (channel.id, msg.id, w["end"])
 
             # ── Order Workshop windows (Primordial Conflict, Battle Stage) ──
-            #   Two 1-hour contests per battle day: ours (19:00 UTC, guaranteed)
-            #   and the opponent's (per-day time, set via /event_edit ws2_dN).
+            #   Two 1-hour contests per battle day: ours (default 19:00 UTC, movable
+            #   via /event_edit ws_time) and the opponent's (per-day time, ws2_dN).
             #   Each pings T-1h AND at start; the 1h ping is deleted when start
             #   fires, and the start ping self-deletes after the 60-min window.
             if is_kvk:
                 short = e["schedule"]["short"]
                 kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
-                for w in kvk.workshop_windows(short, kstart, second_times=e.get("ws_second")):
+                for w in kvk.workshop_windows(short, kstart, second_times=e.get("ws_second"), first_time=e.get("ws_time")):
                     for offset, when in ((60, "in 1 hour"), (0, "starting now")):
                         if w["start"] - timedelta(minutes=offset) != now:
                             continue
@@ -2037,12 +2053,12 @@ def _invasion_alert_text(e, role_id, w, when):
 def _workshop_alert_text(e, role_id, w, when):
     """An Order Workshop contest ping. `w` is a window dict from
     kvk.workshop_windows(); `when` is 'in 1 hour' or 'starting now'. 'ours' is our
-    guaranteed 19:00 UTC event; 'theirs' is the opponent's (per-day) event."""
+    server's event (default 19:00 UTC, movable); 'theirs' is the opponent's (per-day) event."""
     ours = w["kind"] == "ours"
     live = when == "starting now"
     head_state = "LIVE now" if live else f"in 1 hour ({ts(w['start'], 't')})"
     where_emoji = "🛡️" if ours else "⚔️"
-    where = "our server (19:00 UTC)" if ours else "the opponent server"
+    where = f"our server ({w['time']} UTC)" if ours else "the opponent server"
     title = f"🔧{where_emoji} **Order Workshop — {'OUR EVENT' if ours else 'OPPONENT EVENT'} {head_state}**"
     gist = (f"Day {w['day']} · 3 workshops, {int((w['end']-w['start']).total_seconds()//60)}-min contest on **{where}**.")
     lines = [
@@ -2309,7 +2325,7 @@ def _workshop_board_rows(events: list[dict], start: datetime, end: datetime) -> 
             kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
         except (ValueError, KeyError):
             continue
-        for w in kvk.workshop_windows(s["short"], kstart, second_times=e.get("ws_second")):
+        for w in kvk.workshop_windows(s["short"], kstart, second_times=e.get("ws_second"), first_time=e.get("ws_time")):
             if start <= w["start"] <= end:
                 where = "our server" if w["kind"] == "ours" else "opponent server"
                 rows.append(f"• {ts(w['start'],'t')} — 🔧 **Order Workshop** · Day {w['day']} · {where} ({ts(w['start'],'R')})")
