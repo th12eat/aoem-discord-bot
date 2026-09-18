@@ -199,6 +199,7 @@ KVK_DEFS = {
              "actionable": "If we lead, the king (or top-alliance R5) picks the battlefield & time by 12:00 UTC — pick our prime window",
              "prep": "Position marches for the 4-way showdown on {nextDate}"},
             {"key": "showdown", "title": "Showdown", "days": 1,
+             "showdownTime": "19:00",   # default; set per cycle via /event_edit sd_time
              "summary": "4-way fight over 8 Essence Refineries around the chosen Imperial City",
              "scoring": [
                 "Occupying kingdom earns 1M Kingdom Points/sec per refinery held",
@@ -370,6 +371,27 @@ def workshop_windows(short: str, start: datetime, second_times: dict | None = No
         day += timedelta(days=1)
         event_day += 1
     return sorted(out, key=lambda x: x["start"])
+
+
+def showdown_window(short: str, start: datetime, sd_time: str | None = None):
+    """Day-6 Showdown time for a Primordial-type KvK, as an absolute UTC datetime.
+
+    Returns None unless the KvK has a `showdown` stage with a `showdownTime`.
+    `sd_time` overrides the default (HH:MM). The showdown day is the `showdown`
+    stage's date.
+    """
+    defn = KVK_DEFS.get(short, {})
+    stage = next((s for s in defn.get("stages", []) if s.get("key") == "showdown"), None)
+    if not stage or not stage.get("showdownTime"):
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    st = next((s for s in compute_stages(short, start) if s["key"] == "showdown"), None)
+    if st is None:
+        return None
+    d = st["start"].date()
+    h, m = (int(x) for x in (sd_time or stage["showdownTime"]).split(":"))
+    return datetime(d.year, d.month, d.day, h, m, tzinfo=timezone.utc)
 
 
 def invasion_windows(short: str, start: datetime,

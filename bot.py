@@ -1222,6 +1222,9 @@ async def event_remove(interaction: discord.Interaction, event: str):
                        ws2_d2="Primordial only: Day 2 2nd (opponent) Order Workshop time HH:MM UTC",
                        ws2_d3="Primordial only: Day 3 2nd (opponent) Order Workshop time HH:MM UTC",
                        ws_time="Primordial only: OUR Order Workshop time HH:MM UTC (default 19:00)",
+                       sd_time="Primordial only: Day-6 Showdown time HH:MM UTC (default 19:00)",
+                       sd_host="Primordial only: Showdown host server number, e.g. 017",
+                       sd_corner="Primordial only: our corner — N/E/S/W or North/East/South/West",
                        ws2_d4="Primordial only: Day 4 2nd (opponent) Order Workshop time HH:MM UTC")
 @app_commands.autocomplete(event=_remove_autocomplete)  # same picker: events you may admin
 @app_commands.choices(scope=_SCOPE_CHOICES,
@@ -1242,6 +1245,7 @@ async def event_edit(interaction: discord.Interaction, event: str,
                      inv_a2: app_commands.Choice[str] | None = None,
                      inv_a3: app_commands.Choice[str] | None = None,
                      ws_time: str | None = None,
+                     sd_time: str | None = None, sd_host: str | None = None, sd_corner: str | None = None,
                      ws2_d2: str | None = None, ws2_d3: str | None = None, ws2_d4: str | None = None):
     ev = next((e for e in store.events_for_guild(interaction.guild_id) if e["id"] == event.strip()), None)
     if ev is None:
@@ -1352,6 +1356,29 @@ async def event_edit(interaction: discord.Interaction, event: str,
             return await interaction.response.send_message(
                 "⚠️ `ws_time` must be `HH:MM` (24h UTC).", ephemeral=True)
         changes["ws_time"] = v
+    if sd_time is not None or sd_host is not None or sd_corner is not None:
+        pc = stype == "kvk" and kvk.KVK_DEFS.get(ev["schedule"].get("short"), {}).get("workshop")
+        if not pc:
+            return await interaction.response.send_message(
+                "⚠️ `sd_time`/`sd_host`/`sd_corner` only apply to **Primordial Conflict** (Day-6 Showdown).", ephemeral=True)
+        if sd_time is not None:
+            v = sd_time.strip()
+            try:
+                h, m = v.split(":"); assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+            except (ValueError, AssertionError):
+                return await interaction.response.send_message(
+                    "⚠️ `sd_time` must be `HH:MM` (24h UTC).", ephemeral=True)
+            changes["sd_time"] = v
+        if sd_host is not None:
+            changes["sd_host"] = sd_host.strip().lstrip("#")
+        if sd_corner is not None:
+            cmap = {"n": "North", "e": "East", "s": "South", "w": "West",
+                    "north": "North", "east": "East", "south": "South", "west": "West"}
+            key = sd_corner.strip().lower()
+            if key not in cmap:
+                return await interaction.response.send_message(
+                    "⚠️ `sd_corner` must be N/E/S/W (or North/East/South/West).", ephemeral=True)
+            changes["sd_corner"] = cmap[key]
     if time:
         # accept one or more comma-separated HH:MM (a series occurrence can have
         # several, e.g. Starfall Vein's four windows)
@@ -1418,6 +1445,17 @@ async def event_edit(interaction: discord.Interaction, event: str,
                       + " → ".join(keys))
     if "ws_time" in changes:
         extra += f" · 🔧 our workshop → **{changes['ws_time']} UTC**"
+    if any(k in changes for k in ("sd_time", "sd_host", "sd_corner")):
+        kstart = datetime.fromisoformat(updated["schedule"]["start"]).replace(tzinfo=timezone.utc)
+        sd = kvk.showdown_window(updated["schedule"]["short"], kstart, sd_time=updated.get("sd_time"))
+        parts = []
+        if sd:
+            parts.append(sd.strftime("%a %H:%M") + " UTC")
+        if updated.get("sd_host"):
+            parts.append("host #" + str(updated["sd_host"]))
+        if updated.get("sd_corner"):
+            parts.append(updated["sd_corner"] + " corner")
+        extra += " · 🔥 showdown → " + (" · ".join(parts) if parts else "set")
     if "ws_second" in changes:
         ws2 = changes["ws_second"]
         setd = ", ".join(f"D{d} {ws2[str(d)]}" for d in (2, 3, 4) if str(d) in ws2) or "none"
@@ -1766,6 +1804,40 @@ async def scheduler_tick():
                                     pass
                             _alert_now[okey] = (channel.id, msg.id, w["end"])
 
+            # ── Day-6 Showdown (Primordial) ──
+            #   One window at the picked time (default 19:00 UTC, set via sd_time).
+            #   Pings T-1h AND at start, with host/corner from sd_host/sd_corner.
+            if is_kvk:
+                short = e["schedule"]["short"]
+                kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+                sd = kvk.showdown_window(short, kstart, sd_time=e.get("sd_time"))
+                if sd:
+                    for offset, when in ((60, "in 1 hour"), (0, "starting now")):
+                        if sd - timedelta(minutes=offset) != now:
+                            continue
+                        okey = f"sd|{e['id']}|{sd.isoformat()}"
+                        fkey = f"{okey}|{offset}"
+                        if fkey in _fired:
+                            continue
+                        _fired.add(fkey)
+                        text = _showdown_alert_text(e, role_id, sd, when)
+                        try:
+                            msg = await channel.send(text)
+                        except discord.DiscordException as ex:
+                            log.error("showdown alert send failed: %s", ex)
+                            continue
+                        if offset == 60:
+                            _alert_1h[okey] = msg.id
+                        else:
+                            old = _alert_1h.pop(okey, None)
+                            if old:
+                                try:
+                                    m = await channel.fetch_message(old)
+                                    await m.delete()
+                                except discord.DiscordException:
+                                    pass
+                            _alert_now[okey] = (channel.id, msg.id, sd + timedelta(hours=4))
+
         # ── legion slot pings (server-wide, WC↔BoD alternating) ──
         #   Same lifecycle as normal events: T-1h + at-start; the 1h alert is
         #   deleted when start fires, and the start alert self-deletes after the
@@ -2047,6 +2119,35 @@ def _invasion_alert_text(e, role_id, w, when):
         ]
     else:
         lines.append("Get ready — do **NOT** pre-position on the enemy server before the window opens (anyone who does is removed at event start). Top up rally troops and line up rally leaders on our side.")
+    return "\n".join(lines)
+
+
+_PC_MAP_URL = "https://th12eat.github.io/aoem-dashboard/dashboards/primordial_conflict_dashboard.html"
+_PC_MAP_LINK = f"[battlefield map]({_PC_MAP_URL})"
+
+
+def _showdown_alert_text(e, role_id, start, when):
+    """Day-6 Showdown ping (Primordial). `when` is 'in 1 hour' or 'starting now'.
+    Host server + our corner come from the event's sd_host / sd_corner if set."""
+    live = when == "starting now"
+    head_state = "LIVE now" if live else f"in 1 hour ({ts(start, 't')})"
+    host = e.get("sd_host")
+    corner = e.get("sd_corner")
+    bits = []
+    if host:
+        bits.append("host **#" + str(host).lstrip("#") + "**")
+    if corner:
+        bits.append("we hold the **" + corner + "** corner")
+    where = (" · ".join(bits)) if bits else "host + corner TBD"
+    lines = [
+        f"<@&{role_id}> 🔥🏰 **Primordial Showdown — 4-way {head_state}** — {ts_both(start)}",
+        f"_{where}. 8 Essence Refineries around the Imperial City — rally-only, no troop loss._",
+        f"**Plan:** lock our home-corner refineries first, then push the flanks — see the {_PC_MAP_LINK}.",
+    ]
+    if live:
+        lines.append("Occupying pays **1M Kingdom Points/sec** per refinery + **800M** to the last holder at end. Taxi-rally the roster in now.")
+    else:
+        lines.append("Position marches near our corner; line up rally leaders. Do not commit before start.")
     return "\n".join(lines)
 
 
