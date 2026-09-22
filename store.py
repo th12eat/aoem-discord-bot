@@ -333,13 +333,17 @@ def remove_event(event_id: str, guild_id: int) -> bool:
 
 def update_event(event_id: str, guild_id: int, changes: dict) -> dict | None:
     """Shallow-merge `changes` into the matching event. Returns the updated
-    event, or None if not found. Nested `schedule` keys merge, not replace."""
+    event, or None if not found. Nested `schedule` keys merge, not replace —
+    unless changes carries `_schedule_replace: True` (a recurrence-type change
+    that must overwrite the whole schedule rather than merge stale keys)."""
+    changes = dict(changes)
+    replace_schedule = changes.pop("_schedule_replace", False)
     with _lock:
         data = _read(EVENTS_PATH, {"events": []})
         for e in data["events"]:
             if e["id"] == event_id and e.get("guild_id") == str(guild_id):
                 for k, v in changes.items():
-                    if k == "schedule" and isinstance(v, dict) and isinstance(e.get("schedule"), dict):
+                    if k == "schedule" and isinstance(v, dict) and isinstance(e.get("schedule"), dict) and not replace_schedule:
                         e["schedule"].update(v)
                     else:
                         e[k] = v

@@ -8,10 +8,22 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.14.0"
+VERSION = "1.15.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.15.0 — Server Maintenance, KvK board link, recurrence fix**
+• New **`/event_add type:maintenance`** (R4): schedule server maintenance with a
+  **date + time + duration**. Pings @eRa8 with 🚨🔧 **three** times — 1 hour before,
+  right as servers go down, and again when they're back online.
+• **KvK Dashboard button** on the board — links to the active KvK's live page. Set
+  the link per-KvK with `/event_add type:kvk url:` (most recent KvK wins), or a
+  server-wide default via `/config type:server kvk_url:`.
+• **`/event_edit recurrence:`** — you can now change how an existing event repeats
+  (once / daily / every-other / weekly, with `weekdays:` for weekly). Fixes events
+  that wouldn't start recurring after being edited.
+• The *My Alliance Events* view no longer shows the "Time not set" footer.
 
 **v1.14.0 — World Campaign boss reservations**
 • New **`/wc_vanguard`** (R4): each alliance reserves ONE **Vanguard Marshall**
@@ -182,7 +194,7 @@ All times are entered in **UTC**; everyone *sees* them in their own local time.
 Each command notes its **scope** and **who can use it**.
 
 **⚙️ Setup — _Manage Server only_**
-• `/config type:server` — set the @eRa8 role + board channel (#event-scheduler). *[Server]*
+• `/config type:server` — set the @eRa8 role + board channel (#event-scheduler); optional `kvk_url:` default for the KvK board button. *[Server]*
 • `/config type:alliance` — register an alliance's R4 + member roles. *[Server]*
 
 **📣 Server-wide events — _any R4_ (or Manage Server)**
@@ -190,7 +202,8 @@ Pings @eRa8; any alliance's R4 may create/edit these. All adds live under one
 **`/event_add`** — pick `type:`.
 • `/event_add type:server` — announce an event **opening** (date range). *[Server]*
 • `/event_add type:custom scope:Server-wide` — recurring/one-time server event (+ duration). *[Server]*
-• `/event_add type:kvk` — multi-day KvK (TME/GE/BC/PC/DD); stages auto-derived from the start date. *[Server]*
+• `/event_add type:kvk` — multi-day KvK (TME/GE/BC/PC/DD); stages auto-derived from the start date. Add `url:` to link its live dashboard on the board. *[Server]*
+• `/event_add type:maintenance` — server maintenance (date + time + duration). Pings @eRa8 with 🚨🔧 1h before, at start, and at end. *[Server]*
 • `/seed event:` — (re)seed **one** recurring event. Rotating series (City Clash,
   World Campaign, Treasure Hunt) take a `time:` from the 01/04/11/19 UTC pool and
   auto-advance/auto-ping thereafter (Imperial Showdown follows City Clash; Treasure

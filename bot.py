@@ -149,6 +149,7 @@ _CONFIG_TYPE_CHOICES = [
 @app_commands.describe(type="What to configure",
                        server_member_role="Server: @eRa8 — pinged for server-wide events",
                        board_channel="Server: channel for the daily board (e.g. #event-scheduler)",
+                       kvk_url="Server: default KvK dashboard link for the board button (a KvK event's own url overrides it)",
                        alliance="Alliance: which alliance",
                        r4_role="Alliance: that alliance's R4 role (may manage its events)",
                        member_role="Alliance: that alliance's member role (pinged / may view)")
@@ -157,6 +158,7 @@ async def config_cmd(interaction: discord.Interaction,
                      type: app_commands.Choice[str],
                      server_member_role: discord.Role | None = None,
                      board_channel: discord.TextChannel | None = None,
+                     kvk_url: str | None = None,
                      alliance: app_commands.Choice[str] | None = None,
                      r4_role: discord.Role | None = None,
                      member_role: discord.Role | None = None):
@@ -175,20 +177,26 @@ async def config_cmd(interaction: discord.Interaction,
             f"R4: {r4_role.mention} · Members: {member_role.mention}", ephemeral=True)
 
     # server
-    if server_member_role is None and board_channel is None:
+    if server_member_role is None and board_channel is None and kvk_url is None:
         return await interaction.response.send_message(
-            "⚠️ Server config needs at least one of **server_member_role** / **board_channel**.", ephemeral=True)
+            "⚠️ Server config needs at least one of **server_member_role** / **board_channel** / **kvk_url**.", ephemeral=True)
+    if kvk_url and not kvk_url.lower().startswith(("http://", "https://")):
+        return await interaction.response.send_message(
+            "⚠️ `kvk_url` must start with http:// or https://.", ephemeral=True)
     store.set_guild_config(
         interaction.guild_id,
         server_member_role_id=server_member_role.id if server_member_role else None,
         board_channel_id=board_channel.id if board_channel else None,
+        kvk_default_url=kvk_url if kvk_url else None,
     )
     cfg = store.guild_config(interaction.guild_id)
     smr = cfg.get("server_member_role_id"); bc = cfg.get("board_channel_id")
+    ku = cfg.get("kvk_default_url")
     await interaction.response.send_message(
         "✅ Config updated.\n"
         f"**@eRa8 role:** {('<@&'+str(smr)+'>') if smr else '—'}\n"
-        f"**Board channel:** {('<#'+str(bc)+'>') if bc else '—'}",
+        f"**Board channel:** {('<#'+str(bc)+'>') if bc else '—'}\n"
+        f"**Default KvK link:** {ku or '—'}",
         ephemeral=True)
 
 
@@ -204,6 +212,7 @@ _EVENT_TYPE_CHOICES = [
     app_commands.Choice(name="Server opening (curated, date range)", value="server"),
     app_commands.Choice(name="Alliance event (curated, date+time)", value="alliance"),
     app_commands.Choice(name="KvK (multi-day, auto stages)", value="kvk"),
+    app_commands.Choice(name="Server Maintenance (date+time+duration)", value="maintenance"),
 ]
 _RECUR_CHOICES = [app_commands.Choice(name="One-time", value="once"),
                   app_commands.Choice(name="Daily", value="daily"),
@@ -251,6 +260,7 @@ async def _event_add_autocomplete(interaction: discord.Interaction, current: str
     time="Alliance: UTC HH:MM",
     end_date="Server opening: closes UTC YYYY-MM-DD",
     duration="Minutes the event runs (default 60)",
+    url="KvK: link to this KvK's live dashboard page (shown as a board button)",
 )
 @app_commands.choices(type=_EVENT_TYPE_CHOICES, scope=_SCOPE_CHOICES, recurrence=_RECUR_CHOICES,
                       alliance=_ALLIANCE_CHOICES)
@@ -266,8 +276,26 @@ async def event_add(interaction: discord.Interaction,
                     date: str | None = None,
                     time: str | None = None,
                     end_date: str | None = None,
-                    duration: int | None = None):
+                    duration: int | None = None,
+                    url: str | None = None):
     kind = type.value
+
+    # ── server maintenance (date + time + duration, pings @eRa8) ──
+    if kind == "maintenance":
+        if not can_admin_scope(interaction.user, SERVER_SCOPE):
+            return await interaction.response.send_message("Only an R4 can add server maintenance.", ephemeral=True)
+        if not (date and time and duration):
+            return await interaction.response.send_message(
+                "⚠️ Server Maintenance needs **date** (YYYY-MM-DD), **time** (HH:MM UTC) and **duration** (minutes).", ephemeral=True)
+        try:
+            datetime.fromisoformat(f"{date}T{time}")
+        except ValueError:
+            return await interaction.response.send_message(
+                "⚠️ Couldn't parse date/time. Use date `YYYY-MM-DD` and time `HH:MM`.", ephemeral=True)
+        dur = max(1, duration)
+        schedule = {"type": "once", "datetime": f"{date}T{time}", "maint": True}
+        ev = _mk_event(interaction, name or "Server Maintenance", SERVER_SCOPE, schedule, duration=dur)
+        return await _finalize_add(interaction, ev, f"{describe_schedule(schedule)} · {dur}min · 🚨 maintenance")
 
     # ── server opening (curated, date range, pings @eRa8) ──
     if kind == "server":
@@ -321,16 +349,21 @@ async def event_add(interaction: discord.Interaction,
             datetime.fromisoformat(f"{date}T00:00")
         except ValueError:
             return await interaction.response.send_message("⚠️ `date` must be `YYYY-MM-DD`.", ephemeral=True)
+        if url and not url.lower().startswith(("http://", "https://")):
+            return await interaction.response.send_message(
+                "⚠️ `url` must start with http:// or https://.", ephemeral=True)
         kname = kvk.KVK_DEFS[short]["name"]
         schedule = {"type": "kvk", "short": short, "start": f"{date}T00:00"}
-        ev = _mk_event(interaction, kname, SERVER_SCOPE, schedule)
+        extra = {"kvk_url": url} if url else {}
+        ev = _mk_event(interaction, kname, SERVER_SCOPE, schedule, **extra)
         stages = kvk.compute_stages(short, datetime.fromisoformat(f"{date}T00:00").replace(tzinfo=timezone.utc))
         preview = "\n".join(f"• {s['title']} — {utc_date(s['start'])}" for s in stages)
         store.add_event(ev)  # KvK bypasses the duplicate-time check (stage-based)
         if short == "DD":
             _refresh_ddforce_series(interaction.guild_id)
+        link = f"\n🔗 Dashboard: {url}" if url else ""
         await interaction.response.send_message(
-            f"✅ Added **{kname}** (`{ev['id']}`) — {len(stages)} stages:\n{preview}", ephemeral=True)
+            f"✅ Added **{kname}** (`{ev['id']}`) — {len(stages)} stages:\n{preview}{link}", ephemeral=True)
         return await refresh_board(interaction.guild)
 
     # ── custom (free-form) ──
@@ -1225,9 +1258,12 @@ async def event_remove(interaction: discord.Interaction, event: str):
                        sd_time="Primordial only: Day-6 Showdown time HH:MM UTC (default 19:00)",
                        sd_host="Primordial only: Showdown host server number, e.g. 017",
                        sd_corner="Primordial only: our corner — N/E/S/W or North/East/South/West",
-                       ws2_d4="Primordial only: Day 4 2nd (opponent) Order Workshop time HH:MM UTC")
+                       ws2_d4="Primordial only: Day 4 2nd (opponent) Order Workshop time HH:MM UTC",
+                       recurrence="Custom: change how it repeats (once/daily/weekly/every-other). Use with time (+ weekdays for weekly).",
+                       weekdays="Custom weekly: which days, e.g. Mon,Wed,Fri")
 @app_commands.autocomplete(event=_remove_autocomplete)  # same picker: events you may admin
 @app_commands.choices(scope=_SCOPE_CHOICES,
+                      recurrence=_RECUR_CHOICES,
                       scion_first=[app_commands.Choice(name="Our server (#008) — default", value="ours"),
                                    app_commands.Choice(name="Opponent server", value="theirs")],
                       inv_side=[app_commands.Choice(name="Defense (defend our IC)", value="defense"),
@@ -1237,6 +1273,8 @@ async def event_edit(interaction: discord.Interaction, event: str,
                      name: str | None = None, time: str | None = None,
                      datetime_: str | None = None, duration: int | None = None,
                      scope: app_commands.Choice[str] | None = None,
+                     recurrence: app_commands.Choice[str] | None = None,
+                     weekdays: str | None = None,
                      scion_first: app_commands.Choice[str] | None = None,
                      inv_atk: str | None = None, inv_def: str | None = None,
                      inv_time: str | None = None,
@@ -1379,7 +1417,60 @@ async def event_edit(interaction: discord.Interaction, event: str,
                 return await interaction.response.send_message(
                     "⚠️ `sd_corner` must be N/E/S/W (or North/East/South/West).", ephemeral=True)
             changes["sd_corner"] = cmap[key]
-    if time:
+    # ── convert recurrence (e.g. make a one-time event weekly, or vice versa) ──
+    # Rebuilds the schedule to the chosen type. Needs `time` for the time(s);
+    # weekly needs `weekdays`; once/everyother need `datetime_` (or date via time).
+    if recurrence is not None:
+        if stype == "kvk" or ev.get("schedule", {}).get("calendarOnly"):
+            return await interaction.response.send_message(
+                "⚠️ `recurrence` can't be changed on KvK or calendar-only events.", ephemeral=True)
+        rtype = recurrence.value
+        tlist = [x.strip() for x in (time or "").split(",") if x.strip()]
+        for x in tlist:
+            try:
+                h, m = x.split(":"); assert 0 <= int(h) < 24 and 0 <= int(m) < 60
+            except (ValueError, AssertionError):
+                return await interaction.response.send_message(
+                    "⚠️ `time` must be one or more `HH:MM` (24h UTC), comma-separated.", ephemeral=True)
+        if rtype in ("daily", "weekly", "everyother") and not tlist:
+            return await interaction.response.send_message(
+                f"⚠️ Changing recurrence to **{rtype}** also needs `time` (HH:MM).", ephemeral=True)
+        newsched = {"type": rtype}
+        if rtype == "daily":
+            newsched["times"] = tlist
+        elif rtype == "weekly":
+            names = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+            try:
+                days = sorted({names[d.strip().lower()[:3]] for d in (weekdays or "").split(",") if d.strip()})
+                assert days
+            except (KeyError, AssertionError):
+                return await interaction.response.send_message(
+                    "⚠️ Weekly recurrence needs `weekdays` (e.g. Mon,Wed,Fri).", ephemeral=True)
+            newsched["days"] = days
+            newsched["times"] = tlist
+        elif rtype == "everyother":
+            anchor = (datetime_ or "")[:10]
+            try:
+                datetime.fromisoformat((anchor or "x") + "T00:00")
+            except ValueError:
+                return await interaction.response.send_message(
+                    "⚠️ every-other recurrence needs a start date via `datetime_` (YYYY-MM-DDTHH:MM).", ephemeral=True)
+            newsched["anchor"] = anchor
+            newsched["times"] = tlist
+        elif rtype == "once":
+            if not datetime_:
+                return await interaction.response.send_message(
+                    "⚠️ Changing to a one-time event needs `datetime_` (YYYY-MM-DDTHH:MM).", ephemeral=True)
+            try:
+                datetime.fromisoformat(datetime_)
+            except ValueError:
+                return await interaction.response.send_message("⚠️ `datetime_` must be `YYYY-MM-DDTHH:MM`.", ephemeral=True)
+            newsched["datetime"] = datetime_
+        # keep the KvK-irrelevant flags off; replace the schedule wholesale
+        changes["schedule"] = newsched
+        # a wholesale schedule replace shouldn't merge stale keys — mark for replace
+        changes["_schedule_replace"] = True
+    if time and recurrence is None:
         # accept one or more comma-separated HH:MM (a series occurrence can have
         # several, e.g. Starfall Vein's four windows)
         tlist = [x.strip() for x in time.split(",") if x.strip()]
@@ -1593,6 +1684,30 @@ async def scheduler_tick():
             if e.get("schedule", {}).get("timeSet") is False:
                 continue
             is_kvk = e.get("schedule", {}).get("type") == "kvk"
+            is_maint = bool(e.get("schedule", {}).get("maint"))
+            # Server Maintenance owns its own 3-ping lifecycle (T-1h / start / end)
+            # below; skip the generic offset loop so it isn't double-pinged.
+            if is_maint:
+                dur = _event_duration_min(e)
+                for dt in sched.occurrences_between(e, now - timedelta(minutes=dur + 60),
+                                                    now + timedelta(minutes=60)):
+                    end_dt = dt + timedelta(minutes=dur)
+                    stages = ((dt - timedelta(minutes=60), "soon", "in 1 hour"),
+                              (dt, "start", "starting now"),
+                              (end_dt, "end", "complete"))
+                    for fire_at, phase, when in stages:
+                        if fire_at.replace(second=0, microsecond=0) != now:
+                            continue
+                        okey = f"maint|{e['id']}|{dt.isoformat()}|{phase}"
+                        if okey in _fired:
+                            continue
+                        _fired.add(okey)
+                        text = _maint_alert_text(e, role_id, phase, when, dt, end_dt, dur)
+                        try:
+                            await channel.send(text)
+                        except discord.DiscordException as ex:
+                            log.error("maint alert send failed: %s", ex)
+                continue
             # KvK: start-only alerts; others: 1h + now
             offsets = ((0, "starting now"),) if is_kvk else ((60, "in 1 hour"), (0, "starting now"))
             for offset, when in offsets:
@@ -1943,6 +2058,24 @@ def _kvk_stage_body(e, short, stages, idx, header):
     return "\n".join(lines)
 
 
+def _maint_alert_text(e, role_id, phase, when, dt, end_dt, dur):
+    """Server Maintenance ping (🚨🔧). Three phases pinging @server role:
+    T-1h heads-up, start (servers going down), and end (back online)."""
+    name = e["name"]
+    hrs, mins = divmod(dur, 60)
+    span = (f"{hrs}h{mins:02d}m" if hrs and mins else f"{hrs}h" if hrs else f"{mins}m")
+    if phase == "soon":
+        return (f"<@&{role_id}> 🚨🔧 **{name}** {when} — {ts_both(dt)}\n"
+                f"Servers go down at {ts(dt, 't')} for ~{span} (back ~{ts(end_dt, 't')}). "
+                f"Wrap up rallies, marches, and anything time-sensitive now.")
+    if phase == "start":
+        return (f"<@&{role_id}> 🚨🔧 **{name} — servers going down now** ({ts_both(dt)})\n"
+                f"Expected downtime ~{span}. Back online ~{ts(end_dt, 't')} ({ts(end_dt, 'R')}).")
+    # end
+    return (f"<@&{role_id}> 🚨🔧 **{name} complete — servers back online** ({ts_both(end_dt)})\n"
+            f"Maintenance finished. Log back in and resume as normal.")
+
+
 def _alert_text(e, scope, role_id, when, dt, is_kvk):
     """Compose the alert message. KvK stage alerts lead with the legible per-stage
     label and spell out that day's exact point-scoring + what to prep for next."""
@@ -2248,17 +2381,39 @@ async def _send_ephemeral(interaction: discord.Interaction, content: str, kind: 
 
 
 # ── "My Alliance Events" button (persistent) ─────────────────────────────────
+def _active_kvk_url(guild_id: int) -> str | None:
+    """The KvK dashboard link to surface on the board: the url set on a live KvK
+    event (most recently started wins), else the guild's configured default."""
+    best = None  # (start_iso, url)
+    for e in store.events_for_guild(guild_id):
+        s = e.get("schedule", {})
+        if s.get("type") == "kvk" and e.get("kvk_url"):
+            key = s.get("start", "")
+            if best is None or key > best[0]:
+                best = (key, e["kvk_url"])
+    if best:
+        return best[1]
+    return store.guild_config(guild_id).get("kvk_default_url")
+
+
 class BoardView(discord.ui.View):
     """Attached to the public board. The board itself shows only server-wide
-    events; this button reveals the clicker's OWN alliance events, ephemerally."""
+    events; this button reveals the clicker's OWN alliance events, ephemerally.
+    `kvk_url` (if set) adds an outbound link button to the active KvK dashboard."""
 
-    def __init__(self):
+    def __init__(self, kvk_url: str | None = None):
         super().__init__(timeout=None)  # persistent across restarts
         # Link button (outbound URL — no callback) to the Activity Tracker web app.
         self.add_item(discord.ui.Button(
             label="Activity Tracker", emoji="⏰",
             style=discord.ButtonStyle.link,
             url="https://guillomef06.github.io/activity-tracker/app"))
+        # KvK dashboard link — only when a URL is configured/active.
+        if kvk_url:
+            self.add_item(discord.ui.Button(
+                label="KvK Dashboard", emoji="⚔️",
+                style=discord.ButtonStyle.link,
+                url=kvk_url))
 
     @discord.ui.button(label="My Alliance Events", emoji="🔎",
                        style=discord.ButtonStyle.primary,
@@ -2275,9 +2430,6 @@ class BoardView(discord.ui.View):
         d1s, d1e = sched.utc_day_bounds(now + timedelta(days=1))
         evs = [e for e in store.events_for_guild(interaction.guild_id)
                if e.get("scope") in keys]
-        # alliance copies awaiting a time — don't fire, but remind the R4 to set one
-        unset = [e for e in evs if e.get("schedule", {}).get("timeSet") is False]
-
         def block(title, start, end):
             timed = [e for e in evs if e.get("schedule", {}).get("timeSet") is not False]
             pairs = sched.occurrences_for_events(timed, start, end)
@@ -2292,9 +2444,6 @@ class BoardView(discord.ui.View):
         msg = (f"🔎 **Your alliance events** ({names})\n\n"
                f"{block('Today (UTC)', d0s, d0e)}\n\n"
                f"{block('Tomorrow (UTC)', d1s, d1e)}")
-        if unset:
-            msg += "\n\n__⏳ Time not set__ (set with `/event_edit … datetime_:YYYY-MM-DDTHH:MM`)\n" + \
-                   "\n".join(f"• [{scope_label(e.get('scope', SERVER_SCOPE))}] **{e['name']}**" for e in unset)
         await _send_ephemeral(interaction, msg, kind="my_events")
 
     @discord.ui.button(label="Changelog", emoji="📜",
@@ -2498,16 +2647,17 @@ async def refresh_board(guild: discord.Guild):
                f"⏰ **Don't forget to log your scoring for this week's KvK & Legions!** "
                f"Tap **Activity Tracker** below.")
 
+    view = BoardView(kvk_url=_active_kvk_url(guild.id))
     msg_id = cfg.get("board_message_id")
     try:
         if msg_id:
             try:
                 msg = await channel.fetch_message(msg_id)
-                await msg.edit(content=content, view=BoardView())
+                await msg.edit(content=content, view=view)
                 return
             except discord.NotFound:
                 pass
-        sent = await channel.send(content, view=BoardView())
+        sent = await channel.send(content, view=view)
         store.set_guild_config(guild.id, board_message_id=sent.id)
     except discord.DiscordException as ex:
         log.error("board refresh failed: %s", ex)
