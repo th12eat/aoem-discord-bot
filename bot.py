@@ -149,7 +149,7 @@ _CONFIG_TYPE_CHOICES = [
 @app_commands.describe(type="What to configure",
                        server_member_role="Server: @eRa8 — pinged for server-wide events",
                        board_channel="Server: channel for the daily board (e.g. #event-scheduler)",
-                       kvk_url="Server: default KvK dashboard link for the board button (a KvK event's own url overrides it)",
+                       kvk_url="Server: fallback KvK dashboard link for board buttons (used by any live KvK without its own url)",
                        alliance="Alliance: which alliance",
                        r4_role="Alliance: that alliance's R4 role (may manage its events)",
                        member_role="Alliance: that alliance's member role (pinged / may view)")
@@ -196,7 +196,7 @@ async def config_cmd(interaction: discord.Interaction,
         "✅ Config updated.\n"
         f"**@eRa8 role:** {('<@&'+str(smr)+'>') if smr else '—'}\n"
         f"**Board channel:** {('<#'+str(bc)+'>') if bc else '—'}\n"
-        f"**Default KvK link:** {ku or '—'}",
+        f"**Fallback KvK link:** {ku or '—'}",
         ephemeral=True)
 
 
@@ -2381,39 +2381,50 @@ async def _send_ephemeral(interaction: discord.Interaction, content: str, kind: 
 
 
 # ── "My Alliance Events" button (persistent) ─────────────────────────────────
-def _active_kvk_url(guild_id: int) -> str | None:
-    """The KvK dashboard link to surface on the board: the url set on a live KvK
-    event (most recently started wins), else the guild's configured default."""
-    best = None  # (start_iso, url)
+def _active_kvk_buttons(guild_id: int) -> list[tuple[str, str]]:
+    """One dashboard link per *live* KvK that has a URL — for the board buttons.
+
+    Returns [(short, url), …] ordered by start date, so overlapping events (e.g. a
+    TME wrapping up while a DD begins) each get their own button ("TME Dashboard",
+    "DD Dashboard"). A KvK is dropped the moment it concludes (its final stage
+    ends) — before the purge even runs. A KvK with no url of its own falls back to
+    the guild's configured default. Duplicate types keep the most-recent start."""
+    now = datetime.now(timezone.utc)
+    default_url = store.guild_config(guild_id).get("kvk_default_url")
+    best: dict[str, tuple[str, str]] = {}   # short → (url, start_iso)
     for e in store.events_for_guild(guild_id):
         s = e.get("schedule", {})
-        if s.get("type") == "kvk" and e.get("kvk_url"):
-            key = s.get("start", "")
-            if best is None or key > best[0]:
-                best = (key, e["kvk_url"])
-    if best:
-        return best[1]
-    return store.guild_config(guild_id).get("kvk_default_url")
+        if s.get("type") != "kvk" or sched.is_completed(e, now):
+            continue
+        url = e.get("kvk_url") or default_url
+        if not url:
+            continue
+        short = s.get("short", "KvK")
+        start = s.get("start", "")
+        if short not in best or start > best[short][1]:
+            best[short] = (url, start)
+    return [(short, url) for short, (url, _) in sorted(best.items(), key=lambda kv: kv[1][1])]
 
 
 class BoardView(discord.ui.View):
     """Attached to the public board. The board itself shows only server-wide
     events; this button reveals the clicker's OWN alliance events, ephemerally.
-    `kvk_url` (if set) adds an outbound link button to the active KvK dashboard."""
+    `kvk_buttons` adds one outbound link per live KvK dashboard (e.g. TME + DD
+    concurrently) — each disappears when its event concludes."""
 
-    def __init__(self, kvk_url: str | None = None):
+    def __init__(self, kvk_buttons: list[tuple[str, str]] | None = None):
         super().__init__(timeout=None)  # persistent across restarts
         # Link button (outbound URL — no callback) to the Activity Tracker web app.
         self.add_item(discord.ui.Button(
             label="Activity Tracker", emoji="⏰",
             style=discord.ButtonStyle.link,
             url="https://guillomef06.github.io/activity-tracker/app"))
-        # KvK dashboard link — only when a URL is configured/active.
-        if kvk_url:
+        # One KvK dashboard link per live KvK with a URL ("TME Dashboard", …).
+        for short, url in (kvk_buttons or []):
             self.add_item(discord.ui.Button(
-                label="KvK Dashboard", emoji="⚔️",
+                label=f"{short} Dashboard", emoji="⚔️",
                 style=discord.ButtonStyle.link,
-                url=kvk_url))
+                url=url))
 
     @discord.ui.button(label="My Alliance Events", emoji="🔎",
                        style=discord.ButtonStyle.primary,
@@ -2647,7 +2658,7 @@ async def refresh_board(guild: discord.Guild):
                f"⏰ **Don't forget to log your scoring for this week's KvK & Legions!** "
                f"Tap **Activity Tracker** below.")
 
-    view = BoardView(kvk_url=_active_kvk_url(guild.id))
+    view = BoardView(kvk_buttons=_active_kvk_buttons(guild.id))
     msg_id = cfg.get("board_message_id")
     try:
         if msg_id:

@@ -17,9 +17,10 @@ _Broad, user-visible changes per release._
 • New **`/event_add type:maintenance`** (R4): schedule server maintenance with a
   **date + time + duration**. Pings @eRa8 with 🚨🔧 **three** times — 1 hour before,
   right as servers go down, and again when they're back online.
-• **KvK Dashboard button** on the board — links to the active KvK's live page. Set
-  the link per-KvK with `/event_add type:kvk url:` (most recent KvK wins), or a
-  server-wide default via `/config type:server kvk_url:`.
+• **KvK Dashboard buttons** on the board — **one button per live KvK** with a link
+  (e.g. "TME Dashboard" and "DD Dashboard" side-by-side when they overlap). Each
+  button disappears the moment its event concludes. Set the link per-KvK with
+  `/event_add type:kvk url:`, or a server-wide fallback via `/config type:server kvk_url:`.
 • **`/event_edit recurrence:`** — you can now change how an existing event repeats
   (once / daily / every-other / weekly, with `weekdays:` for weekly). Fixes events
   that wouldn't start recurring after being edited.
@@ -194,7 +195,7 @@ All times are entered in **UTC**; everyone *sees* them in their own local time.
 Each command notes its **scope** and **who can use it**.
 
 **⚙️ Setup — _Manage Server only_**
-• `/config type:server` — set the @eRa8 role + board channel (#event-scheduler); optional `kvk_url:` default for the KvK board button. *[Server]*
+• `/config type:server` — set the @eRa8 role + board channel (#event-scheduler); optional `kvk_url:` fallback link for KvK board buttons. *[Server]*
 • `/config type:alliance` — register an alliance's R4 + member roles. *[Server]*
 
 **📣 Server-wide events — _any R4_ (or Manage Server)**
