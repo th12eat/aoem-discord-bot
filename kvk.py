@@ -217,7 +217,7 @@ KVK_DEFS = {
         "name": "Desolate Desert",
         "stages": [
             {"key": "mm",   "title": "Matchmaking", "days": 1, "summary": "Find a match for DD (wait)"},
-            {"key": "z1",   "title": "Zone 1", "days": 1, "summary": "Build SH and gather", "actionable": "Build SH and gather"},
+            {"key": "z1",   "title": "Zone 1", "days": 1, "startOffsetH": 2, "summary": "Build SH and gather", "actionable": "Build SH and gather"},
             {"key": "z2",   "title": "Zone 2", "days": 1, "summary": "Build to Pillar Cities and Tower", "actionable": "Follow alliance markers"},
             {"key": "tower", "title": "Tower of Rotation", "days": 3,
              "summary": "Tower of Rotation opens + Z2→Z2 gates", "actionable": "Follow markers; do Tower of Rotation"},
@@ -253,6 +253,11 @@ def compute_stages(short: str, start: datetime) -> list[dict]:
     for leaf in _leaves(defn):
         s = cursor
         e = cursor + timedelta(days=leaf["days"])
+        # `startOffsetH`: shift ONLY this stage's start later by N hours (its end and
+        # every downstream stage stay day-aligned). DD's Zone 1 opens 02:00, not 00:00.
+        off = leaf.get("startOffsetH")
+        if off:
+            s = s + timedelta(hours=off)
         out.append({**leaf, "start": s, "end": e})
         cursor = e
     return out
