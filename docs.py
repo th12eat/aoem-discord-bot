@@ -8,10 +8,24 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.15.0"
+VERSION = "1.16.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.16.0 — The Mightiest Governor (TMG)**
+• New **`/tmg_seed`** (R4): seed **The Mightiest Governor** — a 7-day event that
+  recurs **every other week forever** (odd ISO weeks, Mon→Sun, in lockstep with the
+  Activity Tracker). Anchor it once on a Monday of an odd ISO week; Catherine
+  auto-creates each cycle after.
+• **Daily TMG notices** (00:00 UTC each day): what to do that day to score (Day 1
+  Tribal Raid → Day 7 All Out), a **recommended point ceiling** (today + running
+  cumulative) to protect TME, the full **1–50 slot owners with target score ranges**,
+  and an **extreme warning that violators are punished**.
+• New **`/tmg_roster`** (R4): set the 50 slot owners for the cycle — comma-separated
+  in-game names in rank order (#1 first); use `-` for an open slot. Carries forward
+  cycle to cycle until you change it.
+• A **TMG warning banner** appears at the bottom of the board whenever a cycle is live.
 
 **v1.15.0 — Server Maintenance, KvK board link, recurrence fix**
 • New **`/event_add type:maintenance`** (R4): schedule server maintenance with a
@@ -233,6 +247,18 @@ All under one **`/legion action:`**:
 Roles + roster auto-empty **Monday 00:00 UTC**; refill Thu/Fri. The bot pings each
 slot **1h before and at start** (40-min window) and the start ping lists the full
 roster (all 4 alliances). Needs **Manage Roles** + the bot's role above the slots.
+
+**🏛️ The Mightiest Governor (TMG) — _any R4_, server-wide**
+A 7-day event (Mon→Sun) that recurs **every other week forever** (odd ISO weeks).
+• `/tmg_seed anchor:YYYY-MM-DD` — anchor the cadence on a **Monday of an odd ISO
+  week** (lockstep with the Activity Tracker). Catherine auto-creates each cycle. *[Server]*
+• `/tmg_roster names:` — set the **1–50 slot owners** for the cycle: in-game names
+  in rank order (#1 first), comma-separated; use `-` for an open slot. Carries
+  forward cycle to cycle until changed. *[Server]*
+Each day at **00:00 UTC** Catherine posts: how to score that day (Day 1 Tribal Raid
+→ Day 7 All Out), a **recommended point ceiling** (today + cumulative) to protect
+TME, the full **slot owners + target ranges**, and a **violator warning**. A warning
+banner also shows on the board while a cycle is live.
 
 **🏰 Alliance events — _that alliance's R4 only_ (or Manage Server)**
 Pings that alliance's member role; only its R4 may create/edit.

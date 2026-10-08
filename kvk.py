@@ -225,7 +225,80 @@ KVK_DEFS = {
             {"key": "aaru", "title": "Aaru Palace", "days": 1, "summary": "Fight at Aaru Palace", "actionable": "Follow alliance instructions"},
         ],
     },
+    "TMG": {
+        "name": "The Mightiest Governor",
+        # A 7-day personal-score event (Mon→Sun) with a different scoring theme per
+        # day. Unlike other KvKs, TMG is COORDINATION-first: the point of every
+        # daily notice is to tell members the recommended per-day point CEILING (so
+        # the parallel TME event isn't drained), reiterate the 50 slot ranges, and
+        # warn that overshooting is punished. Each day is a 1-day stage so it alerts
+        # at its 00:00 UTC start via repost_active_kvk_stages (like any KvK stage).
+        #
+        # `ceiling` = recommended max points for THAT day to stay under slot #50's
+        # range; the daily notice also shows the running cumulative ceiling. The
+        # scoring bullets use the obvious reading of each day's theme and can be
+        # refined later. The 50 slot OWNERS are per-cycle data set via /tmg_roster
+        # (stored on the event as `tmg_roster`), not here; the slot RANGES are the
+        # fixed TMG_SLOT_RANGES below (mirrors the activity-tracker MG slot table).
+        "stages": [
+            {"key": "d1", "title": "Day 1 — Tribal Raid", "days": 1, "ceiling": 50_000,
+             "summary": "Score by raiding tribal villages / barbarians",
+             "scoring": ["Attack and clear tribal villages / barbarian camps for points"]},
+            {"key": "d2", "title": "Day 2 — Hero Growth", "days": 1, "ceiling": 1_450_000,
+             "summary": "Score by leveling and upgrading heroes",
+             "scoring": ["Level up heroes, spend hero EXP, upgrade skills / promote heroes"]},
+            {"key": "d3", "title": "Day 3 — Gathering", "days": 1, "ceiling": 1_550_000,
+             "summary": "Score by gathering resources on the map",
+             "scoring": ["Gather resources (food / wood / stone / gold) from map tiles"]},
+            {"key": "d4", "title": "Day 4 — Speed Ups", "days": 1, "ceiling": 2_000_000,
+             "summary": "Score by using speed-ups",
+             "scoring": ["Consume speed-ups (building / research / training / healing / universal)"]},
+            {"key": "d5", "title": "Day 5 — Unit Training", "days": 1, "ceiling": 3_000_000,
+             "summary": "Score by training units",
+             "scoring": ["Train / promote units in your barracks"]},
+            {"key": "d6", "title": "Day 6 — Power Boost", "days": 1, "ceiling": 1_000_000,
+             "summary": "Score by increasing power",
+             "scoring": ["Raise power via buildings, research, and troops"]},
+            {"key": "d7", "title": "Day 7 — All Out", "days": 1, "ceiling": 1_000_000,
+             "summary": "Every previous day's scoring methods count today",
+             "scoring": [
+                "Tribal Raid — clear tribal villages / barbarian camps",
+                "Hero Growth — level / upgrade / promote heroes",
+                "Gathering — gather resources from map tiles",
+                "Speed Ups — consume speed-ups",
+                "Unit Training — train / promote units",
+                "Power Boost — raise building / research / troop power",
+             ]},
+        ],
+    },
 }
+
+# TMG slot target-score ranges (in MILLIONS), grouped by rank band. Mirrors
+# MG_SLOT_DEFAULTS in the activity-tracker webapp — the single source of truth —
+# so Catherine's daily notice and the webapp agree. A band with min == max is a
+# score to EXCEED; a band with min < max is a range to STAY WITHIN. Expand across
+# 50 individual slots via tmg_slot_range(). (lo, hi) inclusive, 1-based ranks.
+TMG_SLOT_RANGES = [
+    (1, 1, 30, 30),
+    (2, 2, 29, 29),
+    (3, 3, 28, 28),
+    (4, 4, 27, 27),
+    (5, 5, 26, 26),
+    (6, 7, 24, 26),
+    (8, 10, 22, 24),
+    (11, 15, 20, 22),
+    (16, 25, 15, 20),
+    (26, 50, 10, 15),
+]
+
+
+def tmg_slot_range(slot: int) -> tuple[int, int]:
+    """(min, max) target score in MILLIONS for a 1-based TMG slot (1..50).
+    min == max → score to exceed; min < max → stay within. Raises for out-of-range."""
+    for lo, hi, tmin, tmax in TMG_SLOT_RANGES:
+        if lo <= slot <= hi:
+            return tmin, tmax
+    raise ValueError(f"TMG slot {slot} out of range (1..50)")
 
 KVK_CHOICES = [(k, f"{v['name']} ({k})") for k, v in KVK_DEFS.items()]
 

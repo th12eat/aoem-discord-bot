@@ -227,8 +227,10 @@ async def _event_add_autocomplete(interaction: discord.Interaction, current: str
     kind = getattr(chosen, "value", chosen) if chosen is not None else None
     cur = current.lower()
     pairs = []  # (label shown, value submitted)
+    # TMG is seed-driven (/tmg_seed), not added manually — hide it from the picker.
+    kvk_pairs = [(lbl, k) for k, lbl in kvk.KVK_CHOICES if k != "TMG"]
     if kind == "kvk":
-        pairs = [(lbl, k) for k, lbl in kvk.KVK_CHOICES]
+        pairs = kvk_pairs
     elif kind == "server":
         pairs = [(n, n) for n in catalog.SERVER_EVENTS]
     elif kind == "alliance":
@@ -239,7 +241,7 @@ async def _event_add_autocomplete(interaction: discord.Interaction, current: str
         for n in catalog.SERVER_EVENTS + catalog.ALLIANCE_EVENTS:
             if n not in seen:
                 seen.add(n); pairs.append((n, n))
-        pairs += [(lbl, k) for k, lbl in kvk.KVK_CHOICES]
+        pairs += kvk_pairs
     out = [app_commands.Choice(name=lbl[:100], value=val)
            for lbl, val in pairs if cur in lbl.lower() or cur in val.lower()]
     return out[:25]
@@ -340,9 +342,13 @@ async def event_add(interaction: discord.Interaction,
         if not can_admin_scope(interaction.user, SERVER_SCOPE):
             return await interaction.response.send_message("Only an R4 can add KvK events.", ephemeral=True)
         short = event
+        if short == "TMG":
+            return await interaction.response.send_message(
+                "⚠️ TMG (The Mightiest Governor) is seed-driven — use `/tmg_seed` instead of `/event_add`.",
+                ephemeral=True)
         if not short or short not in kvk.KVK_DEFS:
             return await interaction.response.send_message(
-                "⚠️ Pick a KvK `event`.\nOptions: " + ", ".join(f"{lbl}" for _, lbl in kvk.KVK_CHOICES), ephemeral=True)
+                "⚠️ Pick a KvK `event`.\nOptions: " + ", ".join(f"{lbl}" for k, lbl in kvk.KVK_CHOICES if k != "TMG"), ephemeral=True)
         if not date:
             return await interaction.response.send_message("⚠️ KvK needs a start `date` (YYYY-MM-DD).", ephemeral=True)
         try:
@@ -1008,6 +1014,149 @@ def _anchor_series(guild_id: int, name: str, hhmm: str) -> tuple[str, int, str]:
 
 def _valid_pool_time(hhmm: str) -> bool:
     return hhmm in catalog.ROTATION_POOL
+
+
+# ── TMG (The Mightiest Governor): seed + per-cycle 50-slot roster ─────────────
+def _tmg_cycle_monday(anchor: date, today: date) -> date:
+    """The TMG cycle's start Monday that is CURRENTLY running on `today`, else the
+    next upcoming one. Cycles run Mon→Sun every 14 days from `anchor` (a Monday in
+    an odd ISO week). During a cycle's own week → that Monday; during the rest week
+    (or before the anchor) → the next cycle's Monday."""
+    delta = (today - anchor).days
+    if delta < 0:
+        return anchor
+    base = anchor + timedelta(days=14 * (delta // 14))
+    return base if today <= base + timedelta(days=6) else base + timedelta(days=14)
+
+
+def _tmg_events(guild_id: int) -> list[dict]:
+    """All TMG KvK events for a guild (any status), sorted by start date."""
+    out = [e for e in store.events_for_guild(guild_id)
+           if e.get("schedule", {}).get("type") == "kvk" and e["schedule"].get("short") == "TMG"]
+    return sorted(out, key=lambda e: e["schedule"].get("start", ""))
+
+
+def _current_tmg_event(guild_id: int) -> dict | None:
+    """The current/next TMG event: the earliest-starting TMG event that hasn't
+    completed. This is what /tmg_roster targets (active cycle, or the upcoming one
+    during the rest week)."""
+    now = datetime.now(timezone.utc)
+    live = [e for e in _tmg_events(guild_id) if not sched.is_completed(e, now)]
+    return live[0] if live else None
+
+
+def _tmg_active(guild_id: int) -> bool:
+    """True when a TMG cycle is currently RUNNING (its first stage has started and
+    it hasn't completed) — drives the board warning."""
+    now = datetime.now(timezone.utc)
+    for e in _tmg_events(guild_id):
+        try:
+            kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+        except (KeyError, ValueError):
+            continue
+        if kstart <= now and not sched.is_completed(e, now):
+            return True
+    return False
+
+
+def _ensure_tmg_cycle(guild_id: int) -> dict | None:
+    """Create the current-or-next TMG cycle's KvK event if the seed is set and that
+    event doesn't exist yet. De-dup is structural (match on the exact start), so it's
+    restart-safe. Carries the most recent prior cycle's roster forward as a default.
+    Returns the created event, or None if nothing was created."""
+    seed = store.tmg_seed(guild_id)
+    anchor_s = seed.get("anchor")
+    if not anchor_s:
+        return None
+    try:
+        anchor = date_cls.fromisoformat(anchor_s)
+    except ValueError:
+        return None
+    monday = _tmg_cycle_monday(anchor, datetime.now(timezone.utc).date())
+    start_iso = f"{monday.isoformat()}T00:00"
+    existing = _tmg_events(guild_id)
+    if any(e["schedule"].get("start") == start_iso for e in existing):
+        return None
+    # carry forward the latest prior cycle's roster (owners usually persist cycle to cycle)
+    prior_roster = existing[-1].get("tmg_roster") if existing else None
+    ev = {"id": uuid.uuid4().hex[:8], "guild_id": str(guild_id),
+          "name": kvk.KVK_DEFS["TMG"]["name"], "scope": SERVER_SCOPE,
+          "schedule": {"type": "kvk", "short": "TMG", "start": start_iso},
+          "created_by": "system"}
+    if prior_roster:
+        ev["tmg_roster"] = list(prior_roster)
+    store.add_event(ev)
+    return ev
+
+
+@bot.tree.command(name="tmg_seed",
+                  description="Seed TMG (The Mightiest Governor) — a 7-day cycle every other week, forever.")
+@app_commands.describe(anchor="A Monday in an ODD ISO week (YYYY-MM-DD) — the cycle recurs every 14 days from here")
+async def tmg_seed(interaction: discord.Interaction, anchor: str):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can seed TMG.", ephemeral=True)
+    try:
+        ad = date_cls.fromisoformat(anchor.strip())
+    except ValueError:
+        return await interaction.response.send_message(
+            f"⚠️ `{anchor}` isn't a valid date (YYYY-MM-DD).", ephemeral=True)
+    if ad.weekday() != 0:
+        return await interaction.response.send_message(
+            f"⚠️ TMG must be anchored on a **Monday** — {anchor} is a "
+            f"{_WEEKDAY_NAMES[ad.weekday()]}.", ephemeral=True)
+    if ad.isocalendar().week % 2 == 0:
+        return await interaction.response.send_message(
+            f"⚠️ TMG runs on **odd ISO weeks** (to stay in lockstep with the Activity "
+            f"Tracker). {anchor} is ISO week {ad.isocalendar().week} (even) — pick the "
+            "Monday of an odd week.", ephemeral=True)
+    gid = interaction.guild_id
+    store.set_tmg_seed(gid, ad.isoformat())
+    ev = _ensure_tmg_cycle(gid)
+    monday = _tmg_cycle_monday(ad, datetime.now(timezone.utc).date())
+    note = ""
+    if ev is None:
+        cur = _current_tmg_event(gid)
+        if cur:
+            note = "\n_(cycle event already existed — reusing it.)_"
+    await interaction.response.send_message(
+        f"✅ **TMG seeded** — anchored on {ad.isoformat()} (odd ISO week), recurring every "
+        f"14 days forever.\nNext/active cycle starts **{monday.isoformat()}** (Mon→Sun).\n"
+        "Set the 50 slot owners with `/tmg_roster`. Daily notices fire at 00:00 UTC each "
+        f"day of the cycle.{note}", ephemeral=True)
+    await refresh_board(interaction.guild)
+
+
+@bot.tree.command(name="tmg_roster",
+                  description="Set the TMG 1–50 slot owners for the current cycle (comma-separated, rank order).")
+@app_commands.describe(names="In-game names in rank order (#1 first), comma-separated. Use '-' for an open slot. Up to 50.")
+async def tmg_roster(interaction: discord.Interaction, names: str):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can set the TMG roster.", ephemeral=True)
+    gid = interaction.guild_id
+    ev = _current_tmg_event(gid)
+    if ev is None:
+        return await interaction.response.send_message(
+            "⚠️ No active or upcoming TMG cycle. Seed it first with `/tmg_seed`.", ephemeral=True)
+    # preserve names verbatim (incl. Unicode superscripts) — only strip surrounding
+    # whitespace and drop trailing empties so "a,b,c," doesn't create blank slots.
+    roster = [n.strip() for n in names.split(",")]
+    while roster and not roster[-1]:
+        roster.pop()
+    if len(roster) > 50:
+        return await interaction.response.send_message(
+            f"⚠️ That's {len(roster)} names — TMG has only **50** slots. Trim the list.", ephemeral=True)
+    if not roster:
+        return await interaction.response.send_message(
+            "⚠️ No names given. Provide 1–50 comma-separated names (rank order).", ephemeral=True)
+    store.update_event(ev["id"], gid, {"tmg_roster": roster})
+    filled = sum(1 for n in roster if n and n != "-")
+    monday = ev["schedule"]["start"][:10]
+    await interaction.response.send_message(
+        f"✅ TMG roster set for the **{monday}** cycle — **{filled}** slot(s) filled, "
+        f"{50 - filled} open. It appears in each daily notice.", ephemeral=True)
+    await refresh_board(interaction.guild)
+    # re-post today's stage so the updated roster shows immediately (if a cycle is live)
+    await repost_active_kvk_stages(interaction.guild)
 
 
 # ── every-N-week windows (Marauder's Hunt / Warrior's Trial) ──────────────────
@@ -2055,7 +2204,68 @@ def _kvk_stage_body(e, short, stages, idx, header):
     if stage.get("prep"):
         next_date = ts(nxt["start"], "D") if nxt else "the next stage"
         lines.append(f"\n↪ **Prep ahead:** {stage['prep'].replace('{nextDate}', next_date)}")
+    # TMG: append the daily point ceiling + cumulative, the full 1-50 slot owner
+    # list with target ranges, and the violator warning. Each block is its own
+    # paragraph (leading "\n") so _send_public_chunks splits cleanly on blank lines.
+    if short == "TMG":
+        lines += _tmg_stage_extra(e, stages, idx)
     return "\n".join(lines)
+
+
+# ── TMG daily-notice extras (ceiling + 50-slot owners + warning) ──────────────
+def _fmt_pts(n: int) -> str:
+    """Thousands-separated point count, e.g. 1450000 → '1,450,000'."""
+    return f"{int(n):,}"
+
+
+def _tmg_owner(roster: list[str], slot: int) -> str:
+    """Owner name for a 1-based slot, verbatim (preserves Unicode superscripts).
+    A missing entry or an explicit '-' placeholder renders as an open slot."""
+    name = roster[slot - 1].strip() if slot - 1 < len(roster) else ""
+    return name if name and name != "-" else "_(open)_"
+
+
+def _tmg_slot_blocks(roster: list[str]) -> list[str]:
+    """The 1-50 slot owner list as paragraphs (one per rank band), each line
+    '`#n` — Owner'. Banded so no single paragraph nears the 2000-char limit and
+    the shared target range shows once per band."""
+    blocks = []
+    for lo, hi, tmin, tmax in kvk.TMG_SLOT_RANGES:
+        band = f"#{lo}" if lo == hi else f"#{lo}–{hi}"
+        if tmin == tmax:
+            label = f"{tmin}M — score to **exceed**"
+        else:
+            label = f"{tmin}–{tmax}M — **stay within**"
+        rows = [f"__{band} · {label}__"]
+        rows += [f"`#{i}` — {_tmg_owner(roster, i)}" for i in range(lo, hi + 1)]
+        blocks.append("\n".join(rows))
+    return blocks
+
+
+def _tmg_stage_extra(e, stages, idx) -> list[str]:
+    """Extra TMG daily-notice lines appended to _kvk_stage_body: today's ceiling +
+    running cumulative, the full slot-owner list, and the violator warning."""
+    stage = stages[idx]
+    out = []
+    ceiling = stage.get("ceiling")
+    if ceiling is not None:
+        cumulative = sum(int(stages[j].get("ceiling", 0)) for j in range(idx + 1))
+        out.append(
+            "\n⚠️ **Recommended point ceiling (protect TME):**\n"
+            f"• **Today:** stay under **{_fmt_pts(ceiling)}** points\n"
+            f"• **Cumulative by end of today:** stay under **{_fmt_pts(cumulative)}** points\n"
+            "_Staying under the ceiling keeps you within slot #50's range — "
+            "don't overspend resources that TME needs._")
+    roster = e.get("tmg_roster", []) or []
+    out.append("\n🏛️ **Slot owners & target scores** "
+               "(single number = score to exceed · range = stay within):")
+    out += ["\n" + blk for blk in _tmg_slot_blocks(roster)]
+    out.append(
+        "\n🚨🚨 **WARNING — VIOLATORS WILL BE PUNISHED.** 🚨🚨\n"
+        "Exceeding your slot's target range or your daily point ceiling without "
+        "approval drains resources from TME and is a **punishable offense**. "
+        "Claim the slot you were assigned — no more, no less.")
+    return out
 
 
 def _maint_alert_text(e, role_id, phase, when, dt, end_dt, dur):
@@ -2339,6 +2549,21 @@ def _chunk(text: str, limit: int = _EMBED_LIMIT) -> list[str]:
     if cur:
         chunks.append(cur)
     return chunks
+
+
+async def _send_public_chunks(channel, text: str, limit: int = 1990):
+    """Send a long PUBLIC message to `channel`, split across multiple sends when it
+    exceeds Discord's 2000-char limit. Splits on blank lines (via `_chunk`) so logical
+    blocks stay intact. The role ping lives in the first line of the first chunk, so
+    only the first message pings — later chunks are plain continuation. Returns the
+    list of sent messages (empty on failure)."""
+    sent = []
+    for part in _chunk(text, limit):
+        try:
+            sent.append(await channel.send(part))
+        except discord.DiscordException as ex:
+            log.error("public chunk send failed: %s", ex)
+    return sent
 
 
 # remembers each user's last ephemeral response per button "kind" so a repeat
@@ -2657,6 +2882,12 @@ async def refresh_board(guild: discord.Guild):
                f"*In an alliance? Tap **My Alliance Events** below for your own schedule.*\n\n"
                f"⏰ **Don't forget to log your scoring for this week's KvK & Legions!** "
                f"Tap **Activity Tracker** below.")
+    # TMG cycle active → a terse violator warning at the bottom (the full daily
+    # notice carries the ceilings + 50-slot ranges; the board can't be chunked).
+    if _tmg_active(guild.id):
+        content += ("\n\n🏛️🚨 **TMG is LIVE — claim only your assigned slot.** Respect the "
+                    "daily point ceiling & your slot's target range; **violators will be "
+                    "punished** (overspending hurts TME). See today's notice for details.")
 
     view = BoardView(kvk_buttons=_active_kvk_buttons(guild.id))
     msg_id = cfg.get("board_message_id")
@@ -2766,10 +2997,9 @@ async def repost_active_kvk_stages(guild: discord.Guild):
             parent = f" · {stage['parent']}" if stage.get("parent") else ""
             header = f"📋 **{s['short']}: {stage['title']}**{parent} — {e['name']} · current stage"
         text = _kvk_stage_body(e, s["short"], stages, idx, header)
-        try:
-            await channel.send(text)
-        except discord.DiscordException as ex:
-            log.error("kvk stage re-post failed: %s", ex)
+        # TMG's daily body (per-day scoring + 50-slot roster + warning) exceeds the
+        # 2000-char limit, so split across sends; short KvK bodies send as one.
+        await _send_public_chunks(channel, text)
 
 
 @tasks.loop(minutes=1)
@@ -2791,6 +3021,7 @@ async def daily_clear():
     _last_clear_date = today
     for guild in bot.guilds:
         roll_series(guild.id)          # advance any series whose day has passed
+        _ensure_tmg_cycle(guild.id)    # create next TMG cycle (before purge, so the just-ended cycle's roster carries forward)
         purge_completed(guild.id)      # drop events that have fully concluded
         _reseed_nweek_alliances(guild.id)  # regen one-time alliance copies each cycle
         await clear_board_channel(guild)

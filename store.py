@@ -176,6 +176,36 @@ def clear_legion_seed(guild_id: int) -> bool:
         return had
 
 
+# ── TMG (The Mightiest Governor) seed ─────────────────────────────────────────
+# shape under a guild:  "tmg": { "anchor": "YYYY-MM-DD" }
+# `anchor` is a Monday in an ODD ISO week; from it the 7-day TMG cycle recurs every
+# 14 days forever (odd-ISO-week cadence, in lockstep with the activity-tracker's MG
+# schedule). The per-cycle KvK events are auto-created in daily_clear.
+def tmg_seed(guild_id: int) -> dict:
+    return guild_config(guild_id).get("tmg", {})
+
+
+def set_tmg_seed(guild_id: int, anchor: str) -> dict:
+    """Seed (or re-seed) the TMG every-other-week cadence anchored on `anchor`."""
+    with _lock:
+        cfg = load_config()
+        g = cfg["guilds"].setdefault(str(guild_id), {})
+        g.setdefault("tmg", {})["anchor"] = anchor
+        _write(CONFIG_PATH, cfg)
+        return g["tmg"]
+
+
+def clear_tmg_seed(guild_id: int) -> bool:
+    """Remove the TMG seed. Returns True if there was one."""
+    with _lock:
+        cfg = load_config()
+        g = cfg["guilds"].get(str(guild_id), {})
+        had = "tmg" in g
+        g.pop("tmg", None)
+        _write(CONFIG_PATH, cfg)
+        return had
+
+
 # ── rotating-series anchors ───────────────────────────────────────────────────
 # shape under a guild:  "rotation": { "anchors": {
 #     "City Clash": {"date": "2026-08-08", "idx": 2}, ...   # date + pool index
