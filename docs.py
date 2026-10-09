@@ -8,10 +8,22 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.16.0"
+VERSION = "1.17.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.17.0 — Submit activities from Discord**
+• New **`/activity_submit`** (anyone): log a weekly activity to the **Activity
+  Tracker** without leaving Discord. Pick the **week** and **activity** from
+  live dropdowns (they mirror the app, showing only what's valid that week); add
+  your **rank** for ranked activities (leave blank for participation ones like
+  legion). The app validates + scores it and replies privately — malformed or
+  out-of-schedule submissions are rejected with the reason.
+• New **`/activity_link`** (anyone): one-time setup — connect your Discord to your
+  Activity Tracker account (done in the app's **My Account → Connect Discord**).
+  Submissions only work once linked, so the bot acts only for a verified you.
+• New **`/activity_status`** (anyone): check whether you're linked + the current week.
 
 **v1.16.0 — The Mightiest Governor (TMG)**
 • New **`/tmg_seed`** (R4): seed **The Mightiest Governor** — a 7-day event that
@@ -278,6 +290,17 @@ own alliance, read from your roles (a WorldClass member sees Server + WC1 only).
 Completed events never appear.
 • `/event_list` · `/next` · `/today` · `/week`
 • **My Alliance Events** button — your alliance's today + tomorrow.
+
+**📊 Activity Tracker — _personal to you_**
+Submit your weekly activities to the Activity Tracker without leaving Discord.
+Replies are **private to you**.
+• `/activity_link` — one-time setup: connect your Discord to your Activity Tracker
+  account (in the app → **My Account → Connect Discord**). Required before submitting.
+• `/activity_submit week: activity: rank:` — log an activity. Pick **week** +
+  **activity** from the live dropdowns (only what's valid that week); add **rank**
+  for ranked activities, leave blank for participation ones (e.g. legion). The app
+  validates + scores it; bad submissions are rejected with a reason.
+• `/activity_status` — check whether you're linked + the current week.
 
 **🔁 Weekly series (rolling)**
 Seeded by `/seed event:<name>`; each shows the **next** date and advances automatically:

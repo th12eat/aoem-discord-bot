@@ -57,6 +57,7 @@ import catalog
 import series as series_mod
 import legion
 import docs
+import activity
 from alliances import ALLIANCES, SERVER_SCOPE, SCOPES, scope_label, scope_display
 from helpers import (ts, ts_both, utc_date, describe_schedule, can_admin_scope,
                      ping_role_id, is_any_r4, member_alliances, r4_alliances)
@@ -72,6 +73,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True   # for member-role checks + future DM-by-role
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Activity Tracker submission commands (/activity_link, /activity_submit, /activity_status).
+# Self-contained module; registers its commands on the tree. Calls the Supabase
+# discord-submit Edge Function — the bot holds only ACTIVITY_FN_URL + ACTIVITY_BOT_SECRET.
+activity.register(bot)
 
 _fired: set[str] = set()
 # live alert bookkeeping (in-memory; transient alerts, fine to reset on restart).
