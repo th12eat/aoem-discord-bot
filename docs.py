@@ -8,10 +8,16 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.18.0"
+VERSION = "1.19.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.19.0 — Stormlands replaces Golden Expedition**
+• **Golden Expedition (GE)** removed; **Stormlands (SL)** added to `/event_add
+  type:kvk`. Stormlands mirrors **Desolate Desert** (same zone → Tower → Aaru flow
+  + alerts) but runs **14 days** (2-day Matchmaking, then each stage doubled). Exact
+  stage details are placeholders for now — same messaging as DD, just spaced out.
 
 **v1.18.0 — TMG seeds from any Monday**
 • **`/tmg_seed`** no longer requires an odd-ISO-week Monday — anchor it on **any
@@ -234,7 +240,7 @@ Pings @eRa8; any alliance's R4 may create/edit these. All adds live under one
 **`/event_add`** — pick `type:`.
 • `/event_add type:server` — announce an event **opening** (date range). *[Server]*
 • `/event_add type:custom scope:Server-wide` — recurring/one-time server event (+ duration). *[Server]*
-• `/event_add type:kvk` — multi-day KvK (TME/GE/BC/PC/DD); stages auto-derived from the start date. Add `url:` to link its live dashboard on the board. *[Server]*
+• `/event_add type:kvk` — multi-day KvK (TME/SL/BC/PC/DD); stages auto-derived from the start date. Add `url:` to link its live dashboard on the board. *[Server]*
 • `/event_add type:maintenance` — server maintenance (date + time + duration). Pings @eRa8 with 🚨🔧 1h before, at start, and at end. *[Server]*
 • `/seed event:` — (re)seed **one** recurring event. Rotating series (City Clash,
   World Campaign, Treasure Hunt) take a `time:` from the 01/04/11/19 UTC pool and

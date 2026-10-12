@@ -92,12 +92,20 @@ KVK_DEFS = {
              "actionable": "Be online for the invasion window — follow the tower/gate plan on the TME dashboard"},
         ],
     },
-    "GE": {
-        "name": "Golden Expedition",
+    "SL": {
+        "name": "Stormlands",
+        # Mirrors Desolate Desert (same zone→tower→palace flow) but spread over a
+        # 14-day run (vs DD's 7): a 2-day Matchmaking + each DD content stage doubled
+        # in length (Zone 1/2/3 = 2d, Tower = 6d, Aaru = 2d). Titles/summaries are
+        # placeholders cloned from DD — exact Stormlands details to be filled in later.
         "stages": [
-            {"key": "mm",  "title": "Matchmaking", "days": 2, "summary": "Find a match for GE (wait)"},
-            {"key": "inv", "title": "Invasion", "days": 3,
-             "summary": "Do your dailies on the opposing server", "actionable": "PvP + PvE dailies"},
+            {"key": "mm",   "title": "Matchmaking", "days": 2, "summary": "Find a match for SL (wait)"},
+            {"key": "z1",   "title": "Zone 1", "days": 2, "startOffsetH": 2, "summary": "Build SH and gather", "actionable": "Build SH and gather"},
+            {"key": "z2",   "title": "Zone 2", "days": 2, "summary": "Build to Pillar Cities and Tower", "actionable": "Follow alliance markers"},
+            {"key": "tower", "title": "Tower of Rotation", "days": 6,
+             "summary": "Tower of Rotation opens + Z2→Z2 gates", "actionable": "Follow markers; do Tower of Rotation"},
+            {"key": "z3",   "title": "Zone 3", "days": 2, "summary": "Zone 3 opens", "actionable": "Follow alliance markers"},
+            {"key": "aaru", "title": "Aaru Palace", "days": 2, "summary": "Fight at Aaru Palace", "actionable": "Follow alliance instructions"},
         ],
     },
     "BC": {
