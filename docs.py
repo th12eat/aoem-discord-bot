@@ -8,10 +8,15 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.17.0"
+VERSION = "1.18.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.18.0 — TMG seeds from any Monday**
+• **`/tmg_seed`** no longer requires an odd-ISO-week Monday — anchor it on **any
+  Monday** and TMG recurs every 14 days (every other week) from there. Fixes being
+  unable to seed the current week when it fell on an even ISO week.
 
 **v1.17.0 — Submit activities from Discord**
 • New **`/activity_submit`** (anyone): log a weekly activity to the **Activity
@@ -261,9 +266,9 @@ slot **1h before and at start** (40-min window) and the start ping lists the ful
 roster (all 4 alliances). Needs **Manage Roles** + the bot's role above the slots.
 
 **🏛️ The Mightiest Governor (TMG) — _any R4_, server-wide**
-A 7-day event (Mon→Sun) that recurs **every other week forever** (odd ISO weeks).
-• `/tmg_seed anchor:YYYY-MM-DD` — anchor the cadence on a **Monday of an odd ISO
-  week** (lockstep with the Activity Tracker). Catherine auto-creates each cycle. *[Server]*
+A 7-day event (Mon→Sun) that recurs **every other week forever**.
+• `/tmg_seed anchor:YYYY-MM-DD` — anchor the cadence on the **start Monday** of a
+  TMG week; it recurs every 14 days from there. Catherine auto-creates each cycle. *[Server]*
 • `/tmg_roster names:` — set the **1–50 slot owners** for the cycle: in-game names
   in rank order (#1 first), comma-separated; use `-` for an open slot. Carries
   forward cycle to cycle until changed. *[Server]*

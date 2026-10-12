@@ -178,9 +178,9 @@ def clear_legion_seed(guild_id: int) -> bool:
 
 # ── TMG (The Mightiest Governor) seed ─────────────────────────────────────────
 # shape under a guild:  "tmg": { "anchor": "YYYY-MM-DD" }
-# `anchor` is a Monday in an ODD ISO week; from it the 7-day TMG cycle recurs every
-# 14 days forever (odd-ISO-week cadence, in lockstep with the activity-tracker's MG
-# schedule). The per-cycle KvK events are auto-created in daily_clear.
+# `anchor` is the seeded start Monday; from it the 7-day TMG cycle recurs every
+# 14 days forever (every other week). The per-cycle KvK events are auto-created in
+# daily_clear.
 def tmg_seed(guild_id: int) -> dict:
     return guild_config(guild_id).get("tmg", {})
 

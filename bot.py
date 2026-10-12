@@ -1025,8 +1025,8 @@ def _valid_pool_time(hhmm: str) -> bool:
 # ── TMG (The Mightiest Governor): seed + per-cycle 50-slot roster ─────────────
 def _tmg_cycle_monday(anchor: date, today: date) -> date:
     """The TMG cycle's start Monday that is CURRENTLY running on `today`, else the
-    next upcoming one. Cycles run Mon→Sun every 14 days from `anchor` (a Monday in
-    an odd ISO week). During a cycle's own week → that Monday; during the rest week
+    next upcoming one. Cycles run Mon→Sun every 14 days from `anchor` (the seeded
+    start Monday). During a cycle's own week → that Monday; during the rest week
     (or before the anchor) → the next cycle's Monday."""
     delta = (today - anchor).days
     if delta < 0:
@@ -1097,7 +1097,7 @@ def _ensure_tmg_cycle(guild_id: int) -> dict | None:
 
 @bot.tree.command(name="tmg_seed",
                   description="Seed TMG (The Mightiest Governor) — a 7-day cycle every other week, forever.")
-@app_commands.describe(anchor="A Monday in an ODD ISO week (YYYY-MM-DD) — the cycle recurs every 14 days from here")
+@app_commands.describe(anchor="The start Monday of a TMG week (YYYY-MM-DD) — the cycle then recurs every 14 days from here")
 async def tmg_seed(interaction: discord.Interaction, anchor: str):
     if not can_admin_scope(interaction.user, SERVER_SCOPE):
         return await interaction.response.send_message("Only an R4 can seed TMG.", ephemeral=True)
@@ -1110,11 +1110,6 @@ async def tmg_seed(interaction: discord.Interaction, anchor: str):
         return await interaction.response.send_message(
             f"⚠️ TMG must be anchored on a **Monday** — {anchor} is a "
             f"{_WEEKDAY_NAMES[ad.weekday()]}.", ephemeral=True)
-    if ad.isocalendar().week % 2 == 0:
-        return await interaction.response.send_message(
-            f"⚠️ TMG runs on **odd ISO weeks** (to stay in lockstep with the Activity "
-            f"Tracker). {anchor} is ISO week {ad.isocalendar().week} (even) — pick the "
-            "Monday of an odd week.", ephemeral=True)
     gid = interaction.guild_id
     store.set_tmg_seed(gid, ad.isoformat())
     ev = _ensure_tmg_cycle(gid)
@@ -1125,8 +1120,9 @@ async def tmg_seed(interaction: discord.Interaction, anchor: str):
         if cur:
             note = "\n_(cycle event already existed — reusing it.)_"
     await interaction.response.send_message(
-        f"✅ **TMG seeded** — anchored on {ad.isoformat()} (odd ISO week), recurring every "
-        f"14 days forever.\nNext/active cycle starts **{monday.isoformat()}** (Mon→Sun).\n"
+        f"✅ **TMG seeded** — anchored on {ad.isoformat()}, recurring every 14 days forever "
+        "(every other week from that Monday).\n"
+        f"Next/active cycle starts **{monday.isoformat()}** (Mon→Sun).\n"
         "Set the 50 slot owners with `/tmg_roster`. Daily notices fire at 00:00 UTC each "
         f"day of the cycle.{note}", ephemeral=True)
     await refresh_board(interaction.guild)
