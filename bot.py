@@ -2220,27 +2220,30 @@ def _fmt_pts(n: int) -> str:
     return f"{int(n):,}"
 
 
-def _tmg_owner(roster: list[str], slot: int) -> str:
-    """Owner name for a 1-based slot, verbatim (preserves Unicode superscripts).
-    A missing entry or an explicit '-' placeholder renders as an open slot."""
+def _tmg_owner(roster: list[str], slot: int) -> str | None:
+    """Owner name for a 1-based slot, verbatim (preserves Unicode superscripts), or
+    None if the slot is open (no entry, blank, or an explicit '-' placeholder)."""
     name = roster[slot - 1].strip() if slot - 1 < len(roster) else ""
-    return name if name and name != "-" else "_(open)_"
+    return name if name and name != "-" else None
 
 
 def _tmg_slot_blocks(roster: list[str]) -> list[str]:
-    """The 1-50 slot owner list as paragraphs (one per rank band), each line
-    '`#n` — Owner'. Banded so no single paragraph nears the 2000-char limit and
-    the shared target range shows once per band."""
+    """The slot owner list as paragraphs (one per rank band), each line
+    '`#n` — Owner'. OPEN slots are omitted to keep the message compact; a band with
+    no filled slots is skipped entirely. Banded so no single paragraph nears the
+    2000-char limit and the shared target range shows once per band."""
     blocks = []
     for lo, hi, tmin, tmax in kvk.TMG_SLOT_RANGES:
+        rows = [f"`#{i}` — {_tmg_owner(roster, i)}"
+                for i in range(lo, hi + 1) if _tmg_owner(roster, i) is not None]
+        if not rows:
+            continue  # whole band unfilled — don't show an empty header
         band = f"#{lo}" if lo == hi else f"#{lo}–{hi}"
         if tmin == tmax:
             label = f"{tmin}M — score to **exceed**"
         else:
             label = f"{tmin}–{tmax}M — **stay within**"
-        rows = [f"__{band} · {label}__"]
-        rows += [f"`#{i}` — {_tmg_owner(roster, i)}" for i in range(lo, hi + 1)]
-        blocks.append("\n".join(rows))
+        blocks.append("\n".join([f"__{band} · {label}__"] + rows))
     return blocks
 
 
@@ -2259,9 +2262,13 @@ def _tmg_stage_extra(e, stages, idx) -> list[str]:
             "_Staying under the ceiling keeps you within slot #50's range — "
             "don't overspend resources that TME needs._")
     roster = e.get("tmg_roster", []) or []
-    out.append("\n🏛️ **Slot owners & target scores** "
-               "(single number = score to exceed · range = stay within):")
-    out += ["\n" + blk for blk in _tmg_slot_blocks(roster)]
+    blocks = _tmg_slot_blocks(roster)
+    if blocks:
+        out.append("\n🏛️ **Slot owners & target scores** "
+                   "(single number = score to exceed · range = stay within):")
+        out += ["\n" + blk for blk in blocks]
+    else:
+        out.append("\n🏛️ **Slot owners:** _not set yet — an R4 can set them with_ `/tmg_roster`.")
     out.append(
         "\n🚨🚨 **WARNING — VIOLATORS WILL BE PUNISHED.** 🚨🚨\n"
         "Exceeding your slot's target range or your daily point ceiling without "

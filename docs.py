@@ -8,10 +8,15 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.19.0"
+VERSION = "1.20.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.20.0 — TMG hides empty slots**
+• TMG daily notices now **omit unfilled slots** (and any rank band with none
+  filled) instead of printing "(open)" lines — shorter, cleaner messages. A band
+  still shows its target range once above its filled slots.
 
 **v1.19.0 — Stormlands replaces Golden Expedition**
 • **Golden Expedition (GE)** removed; **Stormlands (SL)** added to `/event_add
