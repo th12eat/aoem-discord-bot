@@ -3053,24 +3053,78 @@ def _current_kvk_stage_text(e: dict) -> str | None:
     return _kvk_stage_body(e, s["short"], stages, idx, header)
 
 
+async def _find_posted_kvk_stage(channel, e: dict) -> list[int]:
+    """Locate an already-posted (but untracked) daily stage message for KvK `e` by
+    scanning recent channel history for Catherine's own messages whose header names
+    this KvK + its current stage. Handles messages posted before tracking existed
+    (e.g. before a version upgrade or a mid-day restart). Returns the matching
+    message id(s) in channel order (first chunk first), or [] if none found."""
+    s = e.get("schedule", {})
+    try:
+        kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
+    except (KeyError, ValueError):
+        return []
+    now = datetime.now(timezone.utc)
+    stages = kvk.compute_stages(s["short"], kstart)
+    idx = next((i for i in range(len(stages) - 1, -1, -1)
+                if stages[i]["start"] <= now < stages[i]["end"]), None)
+    if idx is None:
+        return []
+    # The header (pinged "stage starts" OR silent "current stage" form) always
+    # contains this stable marker; the continuation chunks of a multi-part body do
+    # not, so we anchor on the header message then take contiguous same-author ones.
+    marker = f"**{s['short']}: {stages[idx]['title']}**"
+    me = channel.guild.me.id if channel.guild and channel.guild.me else (bot.user.id if bot.user else None)
+    found: list[int] = []
+    try:
+        # oldest→newest within a small recent window so chunk order is natural
+        msgs = [m async for m in channel.history(limit=50)]
+    except discord.DiscordException:
+        return []
+    msgs.reverse()
+    anchor_seen = False
+    for m in msgs:
+        if me is not None and m.author.id != me:
+            continue
+        if marker in (m.content or ""):
+            # a header → start a fresh group (handles a stale earlier copy too)
+            found = [m.id]
+            anchor_seen = True
+        elif anchor_seen and not m.content.startswith(("📅", "⚔️ **This weekend")):
+            # contiguous continuation chunk (not the board/other banner) → part of body
+            found.append(m.id)
+    return found
+
+
 async def refresh_kvk_stage_message(guild: discord.Guild, e: dict):
     """Rewrite the already-posted daily stage-instructions message for KvK event `e`
     in place (used after /event_edit so a corrected detail — e.g. a TME invasion
-    time — reaches the message that's still pinned up in the channel, not just the
+    time or inv_side — reaches the message still up in the channel, not just the
     board). Edits the tracked message(s) when the chunk count is unchanged; if the
     body now splits into a different number of messages, deletes the old set and
-    reposts. No-op if nothing is tracked yet (next daily re-post will carry the fix)
-    or the KvK isn't currently running."""
-    tracked = store.kvk_stage_msgs(guild.id).get(e["id"])
-    if not tracked:
-        return
-    chan_id, msg_ids = tracked[0], list(tracked[1])
-    channel = guild.get_channel(chan_id)
-    if channel is None:
-        return
+    reposts. If no tracking exists yet (message posted before tracking, or a
+    restart), it first tries to ADOPT the posted message by scanning the channel.
+    No-op only if the KvK isn't currently running or nothing can be found."""
     text = _current_kvk_stage_text(e)
     if text is None:
         return
+    tracked = store.kvk_stage_msgs(guild.id).get(e["id"])
+    if tracked:
+        chan_id, msg_ids = tracked[0], list(tracked[1])
+        channel = guild.get_channel(chan_id)
+    else:
+        channel = None
+        msg_ids = []
+    if channel is None:
+        # no (valid) tracking → fall back to the board channel + adopt by scan
+        cfg = store.guild_config(guild.id)
+        channel = guild.get_channel(cfg.get("board_channel_id")) if cfg.get("board_channel_id") else None
+        if channel is None:
+            return
+        if not msg_ids:
+            msg_ids = await _find_posted_kvk_stage(channel, e)
+        if not msg_ids:
+            return  # nothing posted to adopt — next daily re-post will carry the fix
     parts = _chunk(text, 1990)
     if len(parts) == len(msg_ids):
         # same shape → edit each message in place (preserves position + any reactions)
@@ -3084,6 +3138,8 @@ async def refresh_kvk_stage_message(guild: discord.Guild, e: dict):
                 ok = False
                 break
         if ok:
+            # persist (re-persist, or record newly-adopted ids) so later edits reuse them
+            store.set_kvk_stage_msg(guild.id, e["id"], channel.id, msg_ids)
             return
     # shape changed (or an edit failed): delete the old set and repost fresh
     for mid in msg_ids:

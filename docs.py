@@ -8,10 +8,17 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.22.0"
+VERSION = "1.22.1"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.22.1 — Edits adopt a message posted before tracking**
+• Editing a running KvK now **finds and rewrites the daily notice even if it was
+  posted before tracking existed** (before this upgrade, or before a restart): the
+  bot scans the channel for its own matching stage message, rewrites it in place,
+  and starts tracking it. Fixes an edit appearing to "take" (the confirmation was
+  right) while the posted message still showed the old value.
 
 **v1.22.0 — Daily-notice edits survive a bot restart**
 • The in-place daily-notice rewrite from v1.21.0 now **persists across restarts** —
