@@ -206,6 +206,29 @@ def clear_tmg_seed(guild_id: int) -> bool:
         return had
 
 
+# ── posted daily KvK stage messages ───────────────────────────────────────────
+# shape under a guild:  "kvk_stage_msgs": { "<event_id>": [channel_id, [msg_id, …]] }
+# Tracks the channel + message id(s) of each running KvK's currently-posted daily
+# stage-instructions body, so /event_edit can rewrite it in place — persisted so it
+# survives a bot restart (the in-memory copy would otherwise be lost, leaving a
+# stale message un-editable). Re-seeded on each daily re-post.
+def kvk_stage_msgs(guild_id: int) -> dict:
+    return guild_config(guild_id).get("kvk_stage_msgs", {})
+
+
+def set_kvk_stage_msg(guild_id: int, event_id: str, channel_id: int, msg_ids: list[int]) -> None:
+    """Record (or with empty `msg_ids`, clear) the posted daily message ids for a KvK event."""
+    with _lock:
+        cfg = load_config()
+        g = cfg["guilds"].setdefault(str(guild_id), {})
+        tracked = g.setdefault("kvk_stage_msgs", {})
+        if msg_ids:
+            tracked[event_id] = [channel_id, list(msg_ids)]
+        else:
+            tracked.pop(event_id, None)
+        _write(CONFIG_PATH, cfg)
+
+
 # ── rotating-series anchors ───────────────────────────────────────────────────
 # shape under a guild:  "rotation": { "anchors": {
 #     "City Clash": {"date": "2026-08-08", "idx": 2}, ...   # date + pool index

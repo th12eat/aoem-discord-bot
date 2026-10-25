@@ -90,13 +90,12 @@ _alert_now: dict[str, tuple[int, int, datetime]] = {}
 #   invasion-timeline notice — deleted when the next step for that event fires,
 #   so the channel shows only the current step instead of all 8 lingering.
 _tme_inv_last: dict[str, tuple[int, int]] = {}
-#   _kvk_stage_msgs[event_id] = (channel_id, [message_ids]) of the current day's
-#   re-posted KvK stage-instructions body (possibly multi-message for TMG). Tracked
-#   so /event_edit can rewrite it in place when the event's details change (e.g. a
-#   corrected TME invasion time). In-memory: re-seeded by repost_active_kvk_stages
-#   each daily clear; a mid-day restart just means the next edit reposts instead of
-#   editing (the next midnight re-post re-establishes tracking either way).
-_kvk_stage_msgs: dict[str, tuple[int, list[int]]] = {}
+#   The current day's re-posted KvK stage-instructions message id(s) per event are
+#   tracked so /event_edit can rewrite them in place when the event's details change
+#   (e.g. a corrected TME invasion time or inv_side). This lives in the STORE
+#   (store.kvk_stage_msgs / set_kvk_stage_msg), persisted per guild so it survives a
+#   bot restart — otherwise a reset would orphan the posted message and an edit after
+#   it would silently no-op. Re-seeded by repost_active_kvk_stages each daily clear.
 # last minute the scheduler processed (UTC, second/micro zeroed). Used to catch
 # up any target minute skipped by @tasks.loop drift, so a once-a-week ping can't
 # be lost just because a tick landed a few seconds off the exact minute.
@@ -2968,6 +2967,10 @@ async def clear_board_channel(guild: discord.Guild):
                         pass
         except discord.DiscordException as ex2:
             log.error("board channel clear failed: %s", ex2)
+    # the purge invalidated every tracked daily stage message — clear the tracking
+    # so stale entries don't linger; repost_active_kvk_stages repopulates live KvKs.
+    for eid in list(store.kvk_stage_msgs(guild.id)):
+        store.set_kvk_stage_msg(guild.id, eid, 0, [])
     # re-post/refresh the board so it (and its buttons) survive the wipe
     await refresh_board(guild)
     # the wipe also removed any persistent KvK stage alerts — re-post the current
@@ -3021,12 +3024,9 @@ async def repost_active_kvk_stages(guild: discord.Guild):
         # TMG's daily body (per-day scoring + 50-slot roster + warning) exceeds the
         # 2000-char limit, so split across sends; short KvK bodies send as one.
         sent = await _send_public_chunks(channel, text)
-        # remember these messages so /event_edit can rewrite them in place if the
-        # KvK's details change before the next daily re-post.
-        if sent:
-            _kvk_stage_msgs[e["id"]] = (channel.id, [m.id for m in sent])
-        else:
-            _kvk_stage_msgs.pop(e["id"], None)
+        # remember these messages (persisted) so /event_edit can rewrite them in
+        # place if the KvK's details change before the next daily re-post.
+        store.set_kvk_stage_msg(guild.id, e["id"], channel.id, [m.id for m in sent] if sent else [])
 
 
 def _current_kvk_stage_text(e: dict) -> str | None:
@@ -3061,10 +3061,10 @@ async def refresh_kvk_stage_message(guild: discord.Guild, e: dict):
     body now splits into a different number of messages, deletes the old set and
     reposts. No-op if nothing is tracked yet (next daily re-post will carry the fix)
     or the KvK isn't currently running."""
-    tracked = _kvk_stage_msgs.get(e["id"])
+    tracked = store.kvk_stage_msgs(guild.id).get(e["id"])
     if not tracked:
         return
-    chan_id, msg_ids = tracked
+    chan_id, msg_ids = tracked[0], list(tracked[1])
     channel = guild.get_channel(chan_id)
     if channel is None:
         return
@@ -3093,10 +3093,7 @@ async def refresh_kvk_stage_message(guild: discord.Guild, e: dict):
         except discord.DiscordException:
             pass
     sent = await _send_public_chunks(channel, text)
-    if sent:
-        _kvk_stage_msgs[e["id"]] = (channel.id, [m.id for m in sent])
-    else:
-        _kvk_stage_msgs.pop(e["id"], None)
+    store.set_kvk_stage_msg(guild.id, e["id"], channel.id, [m.id for m in sent] if sent else [])
 
 
 @tasks.loop(minutes=1)

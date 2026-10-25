@@ -8,10 +8,16 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.21.0"
+VERSION = "1.22.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.22.0 — Daily-notice edits survive a bot restart**
+• The in-place daily-notice rewrite from v1.21.0 now **persists across restarts** —
+  the posted message is tracked on disk, so editing a running KvK after a bot reset
+  still updates the message already in the channel (previously a restart orphaned it
+  and the edit silently did nothing). Applies to **all KvK events** (TME/SL/BC/PC/DD/TMG).
 
 **v1.21.0 — Edits update the posted daily notice**
 • Editing a **running KvK** (e.g. fixing a TME invasion time via `/event_edit`) now
