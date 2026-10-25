@@ -8,10 +8,17 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.20.0"
+VERSION = "1.21.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.21.0 — Edits update the posted daily notice**
+• Editing a **running KvK** (e.g. fixing a TME invasion time via `/event_edit`) now
+  **rewrites that KvK's daily stage message in place** — the correction shows on the
+  message already sitting in the channel, not just on the next day's re-post. If the
+  change resizes the message it's reposted cleanly. `/tmg_roster` updates the live
+  TMG notice the same way (edits it instead of posting a duplicate).
 
 **v1.20.0 — TMG hides empty slots**
 • TMG daily notices now **omit unfilled slots** (and any rank band with none

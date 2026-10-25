@@ -90,6 +90,13 @@ _alert_now: dict[str, tuple[int, int, datetime]] = {}
 #   invasion-timeline notice — deleted when the next step for that event fires,
 #   so the channel shows only the current step instead of all 8 lingering.
 _tme_inv_last: dict[str, tuple[int, int]] = {}
+#   _kvk_stage_msgs[event_id] = (channel_id, [message_ids]) of the current day's
+#   re-posted KvK stage-instructions body (possibly multi-message for TMG). Tracked
+#   so /event_edit can rewrite it in place when the event's details change (e.g. a
+#   corrected TME invasion time). In-memory: re-seeded by repost_active_kvk_stages
+#   each daily clear; a mid-day restart just means the next edit reposts instead of
+#   editing (the next midnight re-post re-establishes tracking either way).
+_kvk_stage_msgs: dict[str, tuple[int, list[int]]] = {}
 # last minute the scheduler processed (UTC, second/micro zeroed). Used to catch
 # up any target minute skipped by @tasks.loop drift, so a once-a-week ping can't
 # be lost just because a tick landed a few seconds off the exact minute.
@@ -1150,15 +1157,16 @@ async def tmg_roster(interaction: discord.Interaction, names: str):
     if not roster:
         return await interaction.response.send_message(
             "⚠️ No names given. Provide 1–50 comma-separated names (rank order).", ephemeral=True)
-    store.update_event(ev["id"], gid, {"tmg_roster": roster})
+    updated = store.update_event(ev["id"], gid, {"tmg_roster": roster}) or {**ev, "tmg_roster": roster}
     filled = sum(1 for n in roster if n and n != "-")
     monday = ev["schedule"]["start"][:10]
     await interaction.response.send_message(
         f"✅ TMG roster set for the **{monday}** cycle — **{filled}** slot(s) filled, "
         f"{50 - filled} open. It appears in each daily notice.", ephemeral=True)
     await refresh_board(interaction.guild)
-    # re-post today's stage so the updated roster shows immediately (if a cycle is live)
-    await repost_active_kvk_stages(interaction.guild)
+    # rewrite today's already-posted stage message in place so the updated roster
+    # shows immediately (if a cycle is live + a daily message is tracked).
+    await refresh_kvk_stage_message(interaction.guild, updated)
 
 
 # ── every-N-week windows (Marauder's Hunt / Warrior's Trial) ──────────────────
@@ -1708,6 +1716,10 @@ async def event_edit(interaction: discord.Interaction, event: str,
         + (f" · {updated.get('duration')}min" if updated.get('duration') else "") + extra,
         ephemeral=True)
     await refresh_board(interaction.guild)
+    # if this is a running KvK, rewrite its already-posted daily stage message in
+    # place so the correction shows immediately (not just on the next daily re-post).
+    if updated.get("schedule", {}).get("type") == "kvk":
+        await refresh_kvk_stage_message(interaction.guild, updated)
 
 
 # ── visibility filter for a viewer ───────────────────────────────────────────
@@ -3008,7 +3020,83 @@ async def repost_active_kvk_stages(guild: discord.Guild):
         text = _kvk_stage_body(e, s["short"], stages, idx, header)
         # TMG's daily body (per-day scoring + 50-slot roster + warning) exceeds the
         # 2000-char limit, so split across sends; short KvK bodies send as one.
-        await _send_public_chunks(channel, text)
+        sent = await _send_public_chunks(channel, text)
+        # remember these messages so /event_edit can rewrite them in place if the
+        # KvK's details change before the next daily re-post.
+        if sent:
+            _kvk_stage_msgs[e["id"]] = (channel.id, [m.id for m in sent])
+        else:
+            _kvk_stage_msgs.pop(e["id"], None)
+
+
+def _current_kvk_stage_text(e: dict) -> str | None:
+    """The current stage-instructions body for a running KvK, as the silent
+    "current stage" presentation (no role ping) — the form used when re-rendering
+    an already-posted daily message after an edit. None if the KvK isn't running
+    right now (no active stage)."""
+    s = e.get("schedule", {})
+    if s.get("type") != "kvk":
+        return None
+    try:
+        kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
+    except (KeyError, ValueError):
+        return None
+    now = datetime.now(timezone.utc)
+    stages = kvk.compute_stages(s["short"], kstart)
+    idx = next((i for i in range(len(stages) - 1, -1, -1)
+                if stages[i]["start"] <= now < stages[i]["end"]), None)
+    if idx is None:
+        return None
+    stage = stages[idx]
+    parent = f" · {stage['parent']}" if stage.get("parent") else ""
+    header = f"📋 **{s['short']}: {stage['title']}**{parent} — {e['name']} · current stage"
+    return _kvk_stage_body(e, s["short"], stages, idx, header)
+
+
+async def refresh_kvk_stage_message(guild: discord.Guild, e: dict):
+    """Rewrite the already-posted daily stage-instructions message for KvK event `e`
+    in place (used after /event_edit so a corrected detail — e.g. a TME invasion
+    time — reaches the message that's still pinned up in the channel, not just the
+    board). Edits the tracked message(s) when the chunk count is unchanged; if the
+    body now splits into a different number of messages, deletes the old set and
+    reposts. No-op if nothing is tracked yet (next daily re-post will carry the fix)
+    or the KvK isn't currently running."""
+    tracked = _kvk_stage_msgs.get(e["id"])
+    if not tracked:
+        return
+    chan_id, msg_ids = tracked
+    channel = guild.get_channel(chan_id)
+    if channel is None:
+        return
+    text = _current_kvk_stage_text(e)
+    if text is None:
+        return
+    parts = _chunk(text, 1990)
+    if len(parts) == len(msg_ids):
+        # same shape → edit each message in place (preserves position + any reactions)
+        ok = True
+        for mid, part in zip(msg_ids, parts):
+            try:
+                msg = await channel.fetch_message(mid)
+                await msg.edit(content=part)
+            except discord.DiscordException as ex:
+                log.warning("kvk stage edit failed (%s) — will repost: %s", mid, ex)
+                ok = False
+                break
+        if ok:
+            return
+    # shape changed (or an edit failed): delete the old set and repost fresh
+    for mid in msg_ids:
+        try:
+            msg = await channel.fetch_message(mid)
+            await msg.delete()
+        except discord.DiscordException:
+            pass
+    sent = await _send_public_chunks(channel, text)
+    if sent:
+        _kvk_stage_msgs[e["id"]] = (channel.id, [m.id for m in sent])
+    else:
+        _kvk_stage_msgs.pop(e["id"], None)
 
 
 @tasks.loop(minutes=1)
