@@ -1168,6 +1168,78 @@ async def tmg_roster(interaction: discord.Interaction, names: str):
     await refresh_kvk_stage_message(interaction.guild, updated)
 
 
+def _parse_points(s: str) -> int | None:
+    """Parse a human point value → int. Accepts '23000', '23k', '1.5M', '2 M',
+    '11,000,000'. Returns None if unparseable or negative."""
+    t = s.strip().lower().replace(",", "").replace(" ", "")
+    if not t:
+        return None
+    mult = 1
+    if t.endswith("k"):
+        mult, t = 1_000, t[:-1]
+    elif t.endswith("m"):
+        mult, t = 1_000_000, t[:-1]
+    try:
+        val = float(t) * mult
+    except ValueError:
+        return None
+    return int(round(val)) if val >= 0 else None
+
+
+_TMG_DAY_CHOICES = [app_commands.Choice(name=f"Day {d}", value=d) for d in range(1, 8)]
+
+
+@bot.tree.command(name="tmg_caps",
+                  description="Override a TMG day's recommended point cap(s) for the current cycle.")
+@app_commands.describe(day="Which day (1–7) to set",
+                       daily="Daily cap (e.g. 2M, 1.5M, 23k, 2000000). Omit to leave unchanged.",
+                       overall="Overall/cumulative cap by end of that day. Omit to leave unchanged.",
+                       reset="Set to True to clear overrides for this day (back to defaults).")
+@app_commands.choices(day=_TMG_DAY_CHOICES)
+async def tmg_caps(interaction: discord.Interaction, day: app_commands.Choice[int],
+                   daily: str | None = None, overall: str | None = None, reset: bool = False):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can set TMG caps.", ephemeral=True)
+    gid = interaction.guild_id
+    ev = _current_tmg_event(gid)
+    if ev is None:
+        return await interaction.response.send_message(
+            "⚠️ No active or upcoming TMG cycle. Seed it first with `/tmg_seed`.", ephemeral=True)
+    idx = day.value - 1  # 0-based day index (matches stage order)
+    caps = {k: dict(v) for k, v in (ev.get("tmg_caps") or {}).items()}
+    if reset:
+        caps.pop(str(idx), None)
+    else:
+        if daily is None and overall is None:
+            return await interaction.response.send_message(
+                "⚠️ Give a `daily` and/or `overall` value (e.g. `daily:2M overall:11M`), "
+                "or `reset:True` to restore defaults.", ephemeral=True)
+        entry = caps.get(str(idx), {})
+        for field, raw in (("daily", daily), ("overall", overall)):
+            if raw is not None:
+                val = _parse_points(raw)
+                if val is None:
+                    return await interaction.response.send_message(
+                        f"⚠️ Couldn't read `{field}` value `{raw}` — use e.g. `2M`, `1.5M`, `23k`, `2000000`.",
+                        ephemeral=True)
+                entry[field] = val
+        caps[str(idx)] = entry
+    updated = store.update_event(ev["id"], gid, {"tmg_caps": caps}) or {**ev, "tmg_caps": caps}
+    # describe the resulting caps for Day N (after defaults + overrides)
+    try:
+        kstart = datetime.fromisoformat(ev["schedule"]["start"]).replace(tzinfo=timezone.utc)
+        stage = kvk.compute_stages("TMG", kstart)[idx]
+    except (ValueError, KeyError, IndexError):
+        stage = {}
+    d_cap, o_cap = _tmg_caps(updated, stage, idx)
+    parts = [f"daily **{_fmt_pts(d_cap)}**" if d_cap is not None else "daily _(none)_"]
+    parts.append(f"overall **{_fmt_pts(o_cap)}**" if o_cap is not None else "overall _(none)_")
+    verb = "reset to defaults" if reset else "updated"
+    await interaction.response.send_message(
+        f"✅ TMG **Day {day.value}** caps {verb} — {' · '.join(parts)}.", ephemeral=True)
+    await refresh_kvk_stage_message(interaction.guild, updated)
+
+
 # ── every-N-week windows (Marauder's Hunt / Warrior's Trial) ──────────────────
 def _nweek_window_open(spec: dict, anchor: date, on_or_after: date) -> date | None:
     """The window-open date for `name`'s occurrence on or after `on_or_after`,
@@ -2258,20 +2330,38 @@ def _tmg_slot_blocks(roster: list[str]) -> list[str]:
     return blocks
 
 
+def _tmg_caps(e, stage, idx) -> tuple[int | None, int | None]:
+    """The (daily, overall) point caps for a TMG stage — the def defaults unless the
+    event carries a per-cycle override in `tmg_caps` (set via /tmg_caps), keyed by
+    0-based day index as a string: {"<idx>": {"daily": N, "overall": N}}. Either may
+    be None (Day 1 has no overall cap)."""
+    daily = stage.get("ceiling")
+    overall = stage.get("overall")
+    ov = (e.get("tmg_caps") or {}).get(str(idx))
+    if ov:
+        if ov.get("daily") is not None:
+            daily = ov["daily"]
+        if ov.get("overall") is not None:
+            overall = ov["overall"]
+    return daily, overall
+
+
 def _tmg_stage_extra(e, stages, idx) -> list[str]:
     """Extra TMG daily-notice lines appended to _kvk_stage_body: today's ceiling +
-    running cumulative, the full slot-owner list, and the violator warning."""
+    overall cap, the full slot-owner list, and the violator warning."""
     stage = stages[idx]
     out = []
-    ceiling = stage.get("ceiling")
-    if ceiling is not None:
-        cumulative = sum(int(stages[j].get("ceiling", 0)) for j in range(idx + 1))
-        out.append(
-            "\n⚠️ **Recommended point ceiling (protect TME):**\n"
-            f"• **Today:** stay under **{_fmt_pts(ceiling)}** points\n"
-            f"• **Cumulative by end of today:** stay under **{_fmt_pts(cumulative)}** points\n"
-            "_Staying under the ceiling keeps you within slot #50's range — "
-            "don't overspend resources that TME needs._")
+    daily, overall = _tmg_caps(e, stage, idx)
+    if daily is not None:
+        lines = ["\n⚠️ **Recommended point ceiling (protect TME):**",
+                 f"• **Today:** stay under **{_fmt_pts(daily)}** points"]
+        if overall is not None:
+            lines.append(f"• **Overall by end of today:** stay under **{_fmt_pts(overall)}** points")
+        if stage.get("ffa_note"):
+            lines.append(f"• {stage['ffa_note']}")
+        lines.append("_Staying under the ceiling keeps you within slot #50's range — "
+                     "don't overspend resources that TME needs._")
+        out.append("\n".join(lines))
     roster = e.get("tmg_roster", []) or []
     blocks = _tmg_slot_blocks(roster)
     if blocks:

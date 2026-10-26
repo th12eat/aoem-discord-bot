@@ -8,10 +8,18 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.22.1"
+VERSION = "1.23.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.23.0 — TMG cap values + editable caps**
+• Updated the TMG daily point caps (Day 1 23k · Day 2–7 1.5M/1.5M/2M/3M/1M/2M) and
+  now show an explicit **overall cap** per day (1.5M → 11M), plus a **Day 7 FFA note**
+  (#10–50 are FFA; you may push from 11M up to ~20M to claim an FFA place).
+• New **`/tmg_caps`** (R4): override any day's **daily** and/or **overall** cap for the
+  current cycle (accepts `2M` / `1.5M` / `23k` / `2000000`), or `reset:True` to restore
+  defaults. The live daily notice updates in place.
 
 **v1.22.1 — Edits adopt a message posted before tracking**
 • Editing a running KvK now **finds and rewrites the daily notice even if it was
@@ -303,8 +311,11 @@ A 7-day event (Mon→Sun) that recurs **every other week forever**.
 • `/tmg_roster names:` — set the **1–50 slot owners** for the cycle: in-game names
   in rank order (#1 first), comma-separated; use `-` for an open slot. Carries
   forward cycle to cycle until changed. *[Server]*
+• `/tmg_caps day: daily: overall:` — override a day's **daily** and/or **overall**
+  point cap for this cycle (e.g. `day:7 daily:2M overall:11M`; accepts `23k`/`1.5M`/
+  `2000000`). `reset:True` restores that day's defaults. *[Server]*
 Each day at **00:00 UTC** Catherine posts: how to score that day (Day 1 Tribal Raid
-→ Day 7 All Out), a **recommended point ceiling** (today + cumulative) to protect
+→ Day 7 All Out), a **recommended point ceiling** (today + overall cap) to protect
 TME, the full **slot owners + target ranges**, and a **violator warning**. A warning
 banner also shows on the board while a cycle is live.
 

@@ -242,33 +242,37 @@ KVK_DEFS = {
         # warn that overshooting is punished. Each day is a 1-day stage so it alerts
         # at its 00:00 UTC start via repost_active_kvk_stages (like any KvK stage).
         #
-        # `ceiling` = recommended max points for THAT day to stay under slot #50's
-        # range; the daily notice also shows the running cumulative ceiling. The
-        # scoring bullets use the obvious reading of each day's theme and can be
-        # refined later. The 50 slot OWNERS are per-cycle data set via /tmg_roster
-        # (stored on the event as `tmg_roster`), not here; the slot RANGES are the
-        # fixed TMG_SLOT_RANGES below (mirrors the activity-tracker MG slot table).
+        # `ceiling` = recommended max points for THAT day; `overall` = the running
+        # cumulative cap to stay under by end of that day. NOTE the overall caps are
+        # NOT a plain sum of the dailies (Day 1 is excluded and they're rounded), so
+        # they're stored explicitly, not computed. Both are DEFAULTS — an R4 can
+        # override either per cycle with /tmg_caps (stored on the event as
+        # `tmg_caps`). The 50 slot OWNERS are per-cycle data set via /tmg_roster; the
+        # slot RANGES are the fixed TMG_SLOT_RANGES below. `ffa_note` (Day 7) is an
+        # extra line about the FFA push shown under the cap.
         "stages": [
-            {"key": "d1", "title": "Day 1 — Tribal Raid", "days": 1, "ceiling": 50_000,
+            {"key": "d1", "title": "Day 1 — Tribal Raid", "days": 1, "ceiling": 23_000,
              "summary": "Score by raiding tribal villages / barbarians",
              "scoring": ["Attack and clear tribal villages / barbarian camps for points"]},
-            {"key": "d2", "title": "Day 2 — Hero Growth", "days": 1, "ceiling": 1_450_000,
+            {"key": "d2", "title": "Day 2 — Hero Growth", "days": 1, "ceiling": 1_500_000, "overall": 1_500_000,
              "summary": "Score by leveling and upgrading heroes",
              "scoring": ["Level up heroes, spend hero EXP, upgrade skills / promote heroes"]},
-            {"key": "d3", "title": "Day 3 — Gathering", "days": 1, "ceiling": 1_550_000,
+            {"key": "d3", "title": "Day 3 — Gathering", "days": 1, "ceiling": 1_500_000, "overall": 3_000_000,
              "summary": "Score by gathering resources on the map",
              "scoring": ["Gather resources (food / wood / stone / gold) from map tiles"]},
-            {"key": "d4", "title": "Day 4 — Speed Ups", "days": 1, "ceiling": 2_000_000,
+            {"key": "d4", "title": "Day 4 — Speed Ups", "days": 1, "ceiling": 2_000_000, "overall": 5_000_000,
              "summary": "Score by using speed-ups",
              "scoring": ["Consume speed-ups (building / research / training / healing / universal)"]},
-            {"key": "d5", "title": "Day 5 — Unit Training", "days": 1, "ceiling": 3_000_000,
+            {"key": "d5", "title": "Day 5 — Unit Training", "days": 1, "ceiling": 3_000_000, "overall": 8_000_000,
              "summary": "Score by training units",
              "scoring": ["Train / promote units in your barracks"]},
-            {"key": "d6", "title": "Day 6 — Power Boost", "days": 1, "ceiling": 1_000_000,
+            {"key": "d6", "title": "Day 6 — Power Boost", "days": 1, "ceiling": 1_000_000, "overall": 9_000_000,
              "summary": "Score by increasing power",
              "scoring": ["Raise power via buildings, research, and troops"]},
-            {"key": "d7", "title": "Day 7 — All Out", "days": 1, "ceiling": 1_000_000,
+            {"key": "d7", "title": "Day 7 — All Out", "days": 1, "ceiling": 2_000_000, "overall": 11_000_000,
              "summary": "Every previous day's scoring methods count today",
+             "ffa_note": ("Places **#10–50 are FFA** (free-for-all). If you want to claim an FFA "
+                          "place you may raise your cap from **11M up to ~20M** today."),
              "scoring": [
                 "Tribal Raid — clear tribal villages / barbarian camps",
                 "Hero Growth — level / upgrade / promote heroes",
