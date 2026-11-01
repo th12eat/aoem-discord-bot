@@ -94,18 +94,82 @@ KVK_DEFS = {
     },
     "SL": {
         "name": "Stormlands",
-        # Mirrors Desolate Desert (same zone→tower→palace flow) but spread over a
-        # 14-day run (vs DD's 7): a 2-day Matchmaking + each DD content stage doubled
-        # in length (Zone 1/2/3 = 2d, Tower = 6d, Aaru = 2d). Titles/summaries are
-        # placeholders cloned from DD — exact Stormlands details to be filled in later.
+        # 4-kingdom, 14-day contest (Mon→Sun×2) after a 2-day Matchmaking. Progressive
+        # zone opening into a central Temple of Zeus, mirroring the Stormlands dashboard
+        # (dashboards/stormlands.html SCHEDULE/STAGES). Contest Day N = this def's
+        # stage days; in-game rules call these Day 2→15 (they count the 2 MM days).
+        #
+        # Two operator-set time systems ride on top of the stages (set via commands):
+        #   • zeus     — the two Temple of Zeus battles (Day 12 & Day 14), each at a
+        #                voted 4-hour window. Times TBD until the in-game vote; set with
+        #                /sl_zeus. Alerts T-1h + at start.
+        #   • erosion  — Storm Erosion (altar-holder triggers it, ~every 2 days from
+        #                Day 3). No fixed server clock, so we let an R4 declare a daily
+        #                time + cadence + day range with /sl_erosion. Alerts T-1h + start.
+        "zeus": {
+            "duration": 240,                       # 4-hour battle window
+            "battles": [
+                {"key": "zeus1", "day": 12, "label": "Battle for the Temple of Zeus I"},
+                {"key": "zeus2", "day": 14, "label": "Battle for the Temple of Zeus II — Finale"},
+            ],
+            # in-game vote slots (start time → 4h window); operators may also pass a
+            # free HH:MM. Defaults unset (TBD) until the vote concludes.
+            "slots": ["01:00", "04:00", "11:00", "19:00"],
+        },
+        "erosion": {
+            "duration": 120,                       # ~2-hour awakening window (dashboard windows are 2h)
+            "default_time": "13:00",               # suggested; operator sets the real one
+            "default_start_day": 3, "default_end_day": 14,
+            "default_cadence": 2,                  # every 2 days (each Altar ~once/2 days)
+        },
         "stages": [
-            {"key": "mm",   "title": "Matchmaking", "days": 2, "summary": "Find a match for SL (wait)"},
-            {"key": "z1",   "title": "Zone 1", "days": 2, "startOffsetH": 2, "summary": "Build SH and gather", "actionable": "Build SH and gather"},
-            {"key": "z2",   "title": "Zone 2", "days": 2, "summary": "Build to Pillar Cities and Tower", "actionable": "Follow alliance markers"},
-            {"key": "tower", "title": "Tower of Rotation", "days": 6,
-             "summary": "Tower of Rotation opens + Z2→Z2 gates", "actionable": "Follow markers; do Tower of Rotation"},
-            {"key": "z3",   "title": "Zone 3", "days": 2, "summary": "Zone 3 opens", "actionable": "Follow alliance markers"},
-            {"key": "aaru", "title": "Aaru Palace", "days": 2, "summary": "Fight at Aaru Palace", "actionable": "Follow alliance instructions"},
+            {"key": "mm", "title": "Matchmaking", "days": 2,
+             "summary": "Servers paired — scout & plan (no scoring yet)",
+             "actionable": "Scout the other three kingdoms; line up rally leads. We're East/purple.",
+             "prep": "Save speed-ups, troops and Storm Energy — the Eroded Wasteland opens {nextDate}"},
+            {"key": "z1", "title": "Day 1 — Eroded Wasteland (Zone 1)", "days": 1,
+             "summary": "Relocate into the Wasteland rim; build Stronghold, Beacons, gathering center",
+             "scoring": [
+                "Hunt Storm Wolves / world monsters — Storm Energy + Storm Fragments (Monster Elimination cap 2M/day)",
+                "Gather inside Stormlands — 20 pts / 100 resources (cap 6M/day)",
+             ],
+             "actionable": "Build your Alliance Stronghold + Storm Beacons and start gathering/wolf-hunting",
+             "prep": "Zone 2 (Forbidden Zone) opens {nextDate} — stage marches near the Wasteland Forts"},
+            {"key": "z2", "title": "Day 2–5 — Eroded Forbidden Zone (Zone 2)", "days": 4,
+             "summary": "Forts open → Energy Cities, Artisan Cities, Storm Altars; then Erosion, Incursion & Strongholds",
+             "scoring": [
+                "Occupy Energy Cities (passive Storm Energy + ~600K pts/hr + buff) and Artisan Cities (build Storm Machines)",
+                "Storm Erosion (from Day 3): damage Erosion Beasts/Giants — 1:1 pts (cap 15M/day)",
+                "Storm Incursion (Day 4–8): land the FINAL HIT on the daily Storm Hydra — 200M to that alliance+server",
+                "Altar offerings — 100 offer = 80K pts; levels the Altar (All-Unit buffs)",
+             ],
+             "actionable": "Take Wasteland Forts → hold Energy/Artisan Cities; seize a Storm Altar to control the Erosion time; hit the Hydra for the final blow",
+             "prep": "Zone 3 (Eternal Storm Eye) opens {nextDate}"},
+            {"key": "z3", "title": "Day 6–8 — Eternal Storm Eye (Zone 3)", "days": 3,
+             "summary": "Storm Eye Forts + Advanced Artisan Cities open; Incursion continues through Day 8",
+             "scoring": [
+                "Occupy Storm Eye Forts (gate to Z3) and Advanced Artisan Cities",
+                "Keep your Controlled Storm Power up — below the regional Storm Power your citadel & troops take continuous damage",
+                "Storm Incursion Hydra final-hit continues through Day 8 (200M)",
+             ],
+             "actionable": "Push through Storm Eye Forts; keep Storm Power up; build Storm Weapons (Fragments + Crystals)",
+             "prep": "Zone 4 (Oblivion Realm / center) opens {nextDate}"},
+            {"key": "z4", "title": "Day 9–11 — Oblivion Realm (Center)", "days": 3,
+             "summary": "Center opens: Oblivion Forts, Energy Storage Cities, Core Storm Sacred Tower. Barrier drops Day 10",
+             "scoring": [
+                "Occupy Oblivion Forts + the Core Storm Sacred Tower (buff + teleport into the Temple core)",
+                "Forbidden-zone barrier drops Day 10 — Zone 1 & 2 are no longer safe",
+                "Day 11: the top-scoring kingdom votes the Day-12 Temple of Zeus battle time",
+             ],
+             "actionable": "Secure the Oblivion Realm + Core Sacred Tower and position for the Temple; win Day 11 to pick the Zeus time",
+             "prep": "Battle for the Temple of Zeus I is {nextDate}"},
+            {"key": "zeus1", "title": "Day 12 — Battle for the Temple of Zeus I", "days": 1,
+             "summary": "First Temple of Zeus battle at the voted time — hold the core for a massive point influx",
+             "actionable": "Be online for the Zeus battle window — rally the Temple core; set the time with /sl_zeus",
+             "prep": "Day 13 the top kingdom votes the finale time; the finale is {nextDate}"},
+            {"key": "zeus2", "title": "Day 13–14 — Temple of Zeus II (Finale)", "days": 2,
+             "summary": "Day 13 votes the finale time; Day 14 is the final Temple of Zeus battle — most kingdom points wins",
+             "actionable": "Win Day 13 to pick the finale time, then hold the Temple core on Day 14. Set the time with /sl_zeus. Then: 2-day recovery (up to 65% troop loss returned)"},
         ],
     },
     "BC": {
@@ -541,6 +605,88 @@ def invasion_windows(short: str, start: datetime,
     else:
         out.append({"start": wsa, "end": wsa + dur, "kind": "attack", "time": wsa.strftime("%H:%M")})
         out.append({"start": wsd, "end": wsd + dur, "kind": "defense", "time": wsd.strftime("%H:%M")})
+    return sorted(out, key=lambda x: x["start"])
+
+
+# ── Stormlands: contest-day helper + Temple of Zeus + Storm Erosion windows ───
+def contest_day_date(short: str, start: datetime, day: int):
+    """UTC date of contest `day` (1-based) for a KvK — i.e. the Nth day AFTER the
+    matchmaking stage(s). Contest Day 1 is the first non-'mm' stage's start day.
+    Returns a date, or None if `short` has no stages."""
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    stages = compute_stages(short, start)
+    content = next((s for s in stages if s["key"] != "mm"), None)
+    if content is None:
+        return None
+    return content["start"].date() + timedelta(days=day - 1)
+
+
+def zeus_windows(short: str, start: datetime, times: dict | None = None) -> list[dict]:
+    """Temple of Zeus battle windows (Stormlands) as absolute UTC datetimes.
+
+    Only a KvK with a `zeus` config produces windows. Each configured battle
+    (Day 12 Battle I, Day 14 Battle II) yields a window ONLY once its time is set:
+    `times` is a per-battle-key map {"zeus1": "HH:MM", "zeus2": "HH:MM"} (set via
+    /sl_zeus). A battle with no time set is omitted (TBD — not pinged). Window
+    length = the config `duration` (default 240 min / 4h).
+
+    Returns dicts: {start, end, key ('zeus1'|'zeus2'), label, time ('HH:MM')}.
+    """
+    defn = KVK_DEFS.get(short, {})
+    cfg = defn.get("zeus")
+    if not cfg:
+        return []
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    times = times or {}
+    dur = timedelta(minutes=cfg.get("duration", 240))
+    out = []
+    for b in cfg["battles"]:
+        hhmm = times.get(b["key"])
+        if not hhmm:
+            continue  # time not voted/set yet → TBD, no window
+        d = contest_day_date(short, start, b["day"])
+        if d is None:
+            continue
+        h, m = (int(x) for x in hhmm.split(":"))
+        ws = datetime(d.year, d.month, d.day, h, m, tzinfo=timezone.utc)
+        out.append({"start": ws, "end": ws + dur, "key": b["key"], "label": b["label"], "time": hhmm})
+    return sorted(out, key=lambda x: x["start"])
+
+
+def erosion_windows(short: str, start: datetime, cfg_override: dict | None = None) -> list[dict]:
+    """Storm Erosion awakening windows (Stormlands) as absolute UTC datetimes.
+
+    Only a KvK with an `erosion` config produces windows, and ONLY once an operator
+    has declared a schedule via /sl_erosion (stored on the event and passed here as
+    `cfg_override`): {"time": "HH:MM", "cadence": N, "start_day": D1, "end_day": D2}.
+    Erosion fires at `time` every `cadence` contest-days from `start_day` through
+    `end_day` inclusive. With no override → [] (nothing set yet, so no pings).
+
+    Returns dicts: {start, end, day (contest-day int), time ('HH:MM')}.
+    """
+    defn = KVK_DEFS.get(short, {})
+    cfg = defn.get("erosion")
+    if not cfg or not cfg_override:
+        return []
+    hhmm = cfg_override.get("time")
+    if not hhmm:
+        return []
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    cadence = max(1, int(cfg_override.get("cadence", cfg.get("default_cadence", 2))))
+    d1 = int(cfg_override.get("start_day", cfg.get("default_start_day", 3)))
+    d2 = int(cfg_override.get("end_day", cfg.get("default_end_day", 14)))
+    dur = timedelta(minutes=cfg.get("duration", 120))
+    h, m = (int(x) for x in hhmm.split(":"))
+    out = []
+    for day in range(d1, d2 + 1, cadence):
+        d = contest_day_date(short, start, day)
+        if d is None:
+            continue
+        ws = datetime(d.year, d.month, d.day, h, m, tzinfo=timezone.utc)
+        out.append({"start": ws, "end": ws + dur, "day": day, "time": hhmm})
     return sorted(out, key=lambda x: x["start"])
 
 

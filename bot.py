@@ -1240,6 +1240,132 @@ async def tmg_caps(interaction: discord.Interaction, day: app_commands.Choice[in
     await refresh_kvk_stage_message(interaction.guild, updated)
 
 
+# ── Stormlands: set Temple of Zeus battle times + Storm Erosion schedule ──────
+def _current_kvk_event(guild_id: int, short: str) -> dict | None:
+    """The current/next non-completed KvK of type `short` (earliest start)."""
+    now = datetime.now(timezone.utc)
+    live = [e for e in store.events_for_guild(guild_id)
+            if e.get("schedule", {}).get("type") == "kvk" and e["schedule"].get("short") == short
+            and not sched.is_completed(e, now)]
+    live.sort(key=lambda e: e["schedule"].get("start", ""))
+    return live[0] if live else None
+
+
+def _valid_hhmm(s: str) -> bool:
+    try:
+        h, m = s.strip().split(":")
+        return 0 <= int(h) < 24 and 0 <= int(m) < 60
+    except (ValueError, AttributeError):
+        return False
+
+
+_SL_ZEUS_SLOT_CHOICES = [
+    app_commands.Choice(name=f"{t} UTC (4h window)", value=t)
+    for t in kvk.KVK_DEFS["SL"]["zeus"]["slots"]
+] + [app_commands.Choice(name="Custom (use time:)", value="custom")]
+_SL_BATTLE_CHOICES = [
+    app_commands.Choice(name="Battle I (Day 12)", value="zeus1"),
+    app_commands.Choice(name="Battle II — Finale (Day 14)", value="zeus2"),
+]
+_SL_CADENCE_CHOICES = [
+    app_commands.Choice(name="Every day", value=1),
+    app_commands.Choice(name="Every other day", value=2),
+    app_commands.Choice(name="Every 3 days", value=3),
+]
+
+
+@bot.tree.command(name="sl_zeus",
+                  description="Stormlands: set a Temple of Zeus battle time (Battle I = Day 12, Finale = Day 14).")
+@app_commands.describe(battle="Which battle to set",
+                       slot="The voted 4-hour window (start time), or 'Custom' + a time:",
+                       time="Custom start time HH:MM UTC (only if slot = Custom, or to override)")
+@app_commands.choices(battle=_SL_BATTLE_CHOICES, slot=_SL_ZEUS_SLOT_CHOICES)
+async def sl_zeus(interaction: discord.Interaction, battle: app_commands.Choice[str],
+                  slot: app_commands.Choice[str] | None = None, time: str | None = None):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can set Stormlands times.", ephemeral=True)
+    gid = interaction.guild_id
+    ev = _current_kvk_event(gid, "SL")
+    if ev is None:
+        return await interaction.response.send_message(
+            "⚠️ No active or upcoming Stormlands event. Add it first with `/event_add type:kvk`.", ephemeral=True)
+    # resolve the start time: a non-custom slot provides it, else require time:
+    hhmm = None
+    if slot is not None and slot.value != "custom":
+        hhmm = slot.value
+    if time is not None:
+        hhmm = time.strip()
+    if not hhmm or not _valid_hhmm(hhmm):
+        return await interaction.response.send_message(
+            "⚠️ Give a `slot` (01:00 / 04:00 / 11:00 / 19:00) or a custom `time:HH:MM` (24h UTC).", ephemeral=True)
+    hhmm = f"{int(hhmm.split(':')[0]):02d}:{int(hhmm.split(':')[1]):02d}"
+    times = dict(ev.get("zeus_times") or {})
+    times[battle.value] = hhmm
+    updated = store.update_event(ev["id"], gid, {"zeus_times": times}) or {**ev, "zeus_times": times}
+    try:
+        kstart = datetime.fromisoformat(ev["schedule"]["start"]).replace(tzinfo=timezone.utc)
+        win = next((w for w in kvk.zeus_windows("SL", kstart, times=times) if w["key"] == battle.value), None)
+    except (ValueError, KeyError):
+        win = None
+    label = "Finale (Day 14)" if battle.value == "zeus2" else "Battle I (Day 12)"
+    when = f"{ts_both(win['start'])} · 4-hour fight" if win else f"{hhmm} UTC"
+    await interaction.response.send_message(
+        f"✅ **Temple of Zeus {label}** set to **{when}**. The daily notice + board now show it; "
+        "alerts fire 1h before and at start.", ephemeral=True)
+    await refresh_board(interaction.guild)
+    await refresh_kvk_stage_message(interaction.guild, updated)
+
+
+@bot.tree.command(name="sl_erosion",
+                  description="Stormlands: set the Storm Erosion schedule (daily time + cadence + day range).")
+@app_commands.describe(time="Daily start time HH:MM UTC the altar-holder triggers Erosion",
+                       cadence="How often it runs (default every other day)",
+                       start_day="First contest day it runs (default 3)",
+                       end_day="Last contest day it runs (default 14)",
+                       clear="Set True to clear the Erosion schedule (stops its pings)")
+@app_commands.choices(cadence=_SL_CADENCE_CHOICES)
+async def sl_erosion(interaction: discord.Interaction, time: str | None = None,
+                     cadence: app_commands.Choice[int] | None = None,
+                     start_day: int | None = None, end_day: int | None = None,
+                     clear: bool = False):
+    if not can_admin_scope(interaction.user, SERVER_SCOPE):
+        return await interaction.response.send_message("Only an R4 can set Stormlands times.", ephemeral=True)
+    gid = interaction.guild_id
+    ev = _current_kvk_event(gid, "SL")
+    if ev is None:
+        return await interaction.response.send_message(
+            "⚠️ No active or upcoming Stormlands event. Add it first with `/event_add type:kvk`.", ephemeral=True)
+    if clear:
+        updated = store.update_event(ev["id"], gid, {"erosion": None}) or {**ev, "erosion": None}
+        await interaction.response.send_message("✅ Storm Erosion schedule cleared — its pings are off.", ephemeral=True)
+        await refresh_board(interaction.guild)
+        return await refresh_kvk_stage_message(interaction.guild, updated)
+    if not time or not _valid_hhmm(time):
+        return await interaction.response.send_message(
+            "⚠️ Give a `time:HH:MM` (24h UTC) — the daily time the altar-holder triggers Storm Erosion.", ephemeral=True)
+    ecfg = kvk.KVK_DEFS["SL"]["erosion"]
+    d1 = start_day if start_day is not None else ecfg["default_start_day"]
+    d2 = end_day if end_day is not None else ecfg["default_end_day"]
+    if not (1 <= d1 <= 14 and 1 <= d2 <= 14 and d1 <= d2):
+        return await interaction.response.send_message(
+            "⚠️ `start_day`/`end_day` must be 1–14 with start ≤ end.", ephemeral=True)
+    cad = cadence.value if cadence is not None else ecfg["default_cadence"]
+    hhmm = f"{int(time.split(':')[0]):02d}:{int(time.split(':')[1]):02d}"
+    erosion = {"time": hhmm, "cadence": cad, "start_day": d1, "end_day": d2}
+    updated = store.update_event(ev["id"], gid, {"erosion": erosion}) or {**ev, "erosion": erosion}
+    try:
+        kstart = datetime.fromisoformat(ev["schedule"]["start"]).replace(tzinfo=timezone.utc)
+        n = len(kvk.erosion_windows("SL", kstart, cfg_override=erosion))
+    except (ValueError, KeyError):
+        n = 0
+    cad_label = {1: "every day", 2: "every other day", 3: "every 3 days"}.get(cad, f"every {cad} days")
+    await interaction.response.send_message(
+        f"✅ **Storm Erosion** set — **{hhmm} UTC**, {cad_label}, contest Day {d1}→{d2} "
+        f"(**{n}** window(s)). Board + daily notice updated; alerts fire 1h before and at start.", ephemeral=True)
+    await refresh_board(interaction.guild)
+    await refresh_kvk_stage_message(interaction.guild, updated)
+
+
 # ── every-N-week windows (Marauder's Hunt / Warrior's Trial) ──────────────────
 def _nweek_window_open(spec: dict, anchor: date, on_or_after: date) -> date | None:
     """The window-open date for `name`'s occurrence on or after `on_or_after`,
@@ -2187,6 +2313,74 @@ async def scheduler_tick():
                                     pass
                             _alert_now[okey] = (channel.id, msg.id, sd + timedelta(hours=4))
 
+            # ── Temple of Zeus battles (Stormlands, Day 12 & Day 14) ──
+            #   One window per battle at the voted time (set via /sl_zeus). Pings
+            #   T-1h AND at start; the 1h ping is deleted when start fires and the
+            #   start ping self-deletes after the 4-hour battle window.
+            if is_kvk:
+                short = e["schedule"]["short"]
+                kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+                for w in kvk.zeus_windows(short, kstart, times=e.get("zeus_times")):
+                    for offset, when in ((60, "in 1 hour"), (0, "starting now")):
+                        if w["start"] - timedelta(minutes=offset) != now:
+                            continue
+                        okey = f"zeus|{e['id']}|{w['key']}|{w['start'].isoformat()}"
+                        fkey = f"{okey}|{offset}"
+                        if fkey in _fired:
+                            continue
+                        _fired.add(fkey)
+                        text = _zeus_alert_text(e, role_id, w, when)
+                        try:
+                            msg = await channel.send(text)
+                        except discord.DiscordException as ex:
+                            log.error("zeus alert send failed: %s", ex)
+                            continue
+                        if offset == 60:
+                            _alert_1h[okey] = msg.id
+                        else:
+                            old = _alert_1h.pop(okey, None)
+                            if old:
+                                try:
+                                    m = await channel.fetch_message(old)
+                                    await m.delete()
+                                except discord.DiscordException:
+                                    pass
+                            _alert_now[okey] = (channel.id, msg.id, w["end"])
+
+            # ── Storm Erosion awakenings (Stormlands, altar-holder schedule) ──
+            #   One window per scheduled day at the declared time (set via
+            #   /sl_erosion). Pings T-1h AND at start; the 1h ping is deleted when
+            #   start fires and the start ping self-deletes after the window.
+            if is_kvk:
+                short = e["schedule"]["short"]
+                kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+                for w in kvk.erosion_windows(short, kstart, cfg_override=e.get("erosion")):
+                    for offset, when in ((60, "in 1 hour"), (0, "starting now")):
+                        if w["start"] - timedelta(minutes=offset) != now:
+                            continue
+                        okey = f"erosion|{e['id']}|{w['start'].isoformat()}"
+                        fkey = f"{okey}|{offset}"
+                        if fkey in _fired:
+                            continue
+                        _fired.add(fkey)
+                        text = _erosion_alert_text(e, role_id, w, when)
+                        try:
+                            msg = await channel.send(text)
+                        except discord.DiscordException as ex:
+                            log.error("erosion alert send failed: %s", ex)
+                            continue
+                        if offset == 60:
+                            _alert_1h[okey] = msg.id
+                        else:
+                            old = _alert_1h.pop(okey, None)
+                            if old:
+                                try:
+                                    m = await channel.fetch_message(old)
+                                    await m.delete()
+                                except discord.DiscordException:
+                                    pass
+                            _alert_now[okey] = (channel.id, msg.id, w["end"])
+
         # ── legion slot pings (server-wide, WC↔BoD alternating) ──
         #   Same lifecycle as normal events: T-1h + at-start; the 1h alert is
         #   deleted when start fires, and the start alert self-deletes after the
@@ -2284,6 +2478,10 @@ def _kvk_stage_body(e, short, stages, idx, header):
                 lines.append(f"• {label} — {ts_both(w['start'])} · 90 min")
             lines.append(f"**Where to be:** {_INVASION_ROLES}")
             lines.append("_Alerts fire 1 hour before and at each window._")
+    # Stormlands: surface the Temple of Zeus battle time on its stage (locked or
+    # TBD) and any Storm Erosion windows that fall on the current stage's days.
+    if short == "SL":
+        lines += _sl_stage_extra(e, stages, idx)
     if stage.get("actionable"):
         lines.append(f"\n▸ {stage['actionable']}")
     if stage.get("prep"):
@@ -2295,6 +2493,46 @@ def _kvk_stage_body(e, short, stages, idx, header):
     if short == "TMG":
         lines += _tmg_stage_extra(e, stages, idx)
     return "\n".join(lines)
+
+
+# ── Stormlands daily-notice extras (Zeus battle time + Storm Erosion windows) ──
+def _sl_stage_extra(e, stages, idx) -> list[str]:
+    """Extra Stormlands lines for _kvk_stage_body: on a Zeus battle stage show the
+    locked/TBD battle time; on any stage show Storm Erosion windows landing on that
+    stage's days (so the daily notice reiterates the altar-holder's schedule)."""
+    stage = stages[idx]
+    out = []
+    try:
+        kstart = datetime.fromisoformat(e["schedule"]["start"]).replace(tzinfo=timezone.utc)
+    except (ValueError, KeyError):
+        return out
+    # Temple of Zeus: on the zeus1/zeus2 stage, show the battle time (or TBD).
+    zcfg = kvk.KVK_DEFS.get("SL", {}).get("zeus", {})
+    battle_keys = {b["key"] for b in zcfg.get("battles", [])}
+    if stage.get("key") in battle_keys:
+        times = e.get("zeus_times") or {}
+        hhmm = times.get(stage["key"])
+        if hhmm:
+            win = next((w for w in kvk.zeus_windows("SL", kstart, times=times) if w["key"] == stage["key"]), None)
+            if win:
+                finale = stage["key"] == "zeus2"
+                out.append(f"\n**🏛️⚡ Temple of Zeus — {'FINALE' if finale else 'Battle I'}:** "
+                           f"{ts_both(win['start'])} · {int((win['end']-win['start']).total_seconds()//3600)}-hour fight")
+                out.append("_Hold the Temple core for a massive kingdom-point influx. Alerts fire 1h before + at start._")
+        else:
+            out.append("\n**🏛️⚡ Temple of Zeus battle time:** _TBD — set it with_ `/sl_zeus` "
+                       "_once the in-game vote concludes (no ping until set)._")
+    # Storm Erosion: list windows whose day falls within this stage's [start,end).
+    ewins = [w for w in kvk.erosion_windows("SL", kstart, cfg_override=e.get("erosion"))
+             if stage["start"] <= w["start"] < stage["end"]]
+    if ewins:
+        out.append("\n**⚡🌩️ Storm Erosion today/this stage:**")
+        for w in ewins:
+            out.append(f"• Day {w['day']} — {ts_both(w['start'])} · {int((w['end']-w['start']).total_seconds()//60)} min")
+        out.append("_Damage Erosion Beasts/Giants — 1:1 Storm Points (15M/day cap). Alerts fire 1h before + at start._")
+    elif stage.get("key") not in ("mm",) and kvk.KVK_DEFS.get("SL", {}).get("erosion") and not e.get("erosion"):
+        out.append("\n**⚡🌩️ Storm Erosion:** _schedule not set — an R4 can set it with_ `/sl_erosion`.")
+    return out
 
 
 # ── TMG daily-notice extras (ceiling + 50-slot owners + warning) ──────────────
@@ -2633,6 +2871,53 @@ def _workshop_alert_text(e, role_id, w, when):
     return "\n".join(lines)
 
 
+_SL_MAP_URL = "https://th12eat.github.io/aoem-dashboard/dashboards/stormlands.html"
+_SL_MAP_LINK = f"[Stormlands dashboard]({_SL_MAP_URL})"
+
+
+def _zeus_alert_text(e, role_id, w, when):
+    """A Temple of Zeus battle ping (Stormlands). `w` is a window dict from
+    kvk.zeus_windows(); `when` is 'in 1 hour' or 'starting now'."""
+    live = when == "starting now"
+    head_state = "LIVE now" if live else f"in 1 hour ({ts(w['start'], 't')})"
+    dur = int((w["end"] - w["start"]).total_seconds() // 60)
+    finale = w["key"] == "zeus2"
+    title = f"🏛️⚡ **Temple of Zeus — {'FINALE' if finale else 'Battle I'} {head_state}**"
+    lines = [
+        f"<@&{role_id}> {title} — {ts_both(w['start'])}",
+        f"_{w['label']} · {dur // 60}-hour battle at the map center._",
+        "**How to score:** hold the **Temple of Zeus core** for a massive kingdom-point influx. "
+        "Rally the core, teleport in via the Core Storm Sacred Tower, and keep it occupied.",
+    ]
+    if finale:
+        lines.append("**This is the finale — most kingdom points wins.** Commit everything; "
+                     "2-day recovery (up to 65% troop loss returned) follows.")
+    if live:
+        lines.append(f"⏳ Window closes {ts(w['end'], 'R')}.")
+    else:
+        lines.append(f"Get ready — pre-stage marches, top up rally troops, line up rally leads. Plan: {_SL_MAP_LINK}.")
+    return "\n".join(lines)
+
+
+def _erosion_alert_text(e, role_id, w, when):
+    """A Storm Erosion awakening ping (Stormlands). `w` is a window dict from
+    kvk.erosion_windows(); `when` is 'in 1 hour' or 'starting now'."""
+    live = when == "starting now"
+    head_state = "LIVE now" if live else f"in 1 hour ({ts(w['start'], 't')})"
+    dur = int((w["end"] - w["start"]).total_seconds() // 60)
+    lines = [
+        f"<@&{role_id}> ⚡🌩️ **Storm Erosion — Day {w['day']} {head_state}** — {ts_both(w['start'])}",
+        f"_Erosion Wolves & Giants spawn around our Storm Altar (~{dur}-min window)._",
+        "**How to score:** damage Erosion Beasts & Giants — **1:1 Storm Points per damage** "
+        "(up to the 15M/day cap) plus Storm Fragments. Focus fire the Giants.",
+    ]
+    if live:
+        lines.append(f"⏳ Window closes {ts(w['end'], 'R')}.")
+    else:
+        lines.append("Get ready — gather marches on the Altar and top up troops.")
+    return "\n".join(lines)
+
+
 # ── long-text ephemeral sender ───────────────────────────────────────────────
 #   Plain message content caps at 2000 chars; an embed description allows 4096.
 #   Send the text as embed(s), splitting on blank lines if it ever exceeds 4096
@@ -2949,6 +3234,41 @@ def _invasion_board_rows(events: list[dict], start: datetime, end: datetime) -> 
     return rows
 
 
+def _zeus_board_rows(events: list[dict], start: datetime, end: datetime) -> list[str]:
+    """Temple of Zeus battle windows (Stormlands) within [start,end]."""
+    rows = []
+    for e in events:
+        s = e.get("schedule", {})
+        if s.get("type") != "kvk":
+            continue
+        try:
+            kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
+        except (ValueError, KeyError):
+            continue
+        for w in kvk.zeus_windows(s["short"], kstart, times=e.get("zeus_times")):
+            if start <= w["start"] <= end:
+                which = "Finale" if w["key"] == "zeus2" else "Battle I"
+                rows.append(f"• {ts(w['start'],'t')} — 🏛️⚡ **Temple of Zeus** · {which} ({ts(w['start'],'R')})")
+    return rows
+
+
+def _erosion_board_rows(events: list[dict], start: datetime, end: datetime) -> list[str]:
+    """Storm Erosion awakening windows (Stormlands) within [start,end]."""
+    rows = []
+    for e in events:
+        s = e.get("schedule", {})
+        if s.get("type") != "kvk":
+            continue
+        try:
+            kstart = datetime.fromisoformat(s["start"]).replace(tzinfo=timezone.utc)
+        except (ValueError, KeyError):
+            continue
+        for w in kvk.erosion_windows(s["short"], kstart, cfg_override=e.get("erosion")):
+            if start <= w["start"] <= end:
+                rows.append(f"• {ts(w['start'],'t')} — ⚡🌩️ **Storm Erosion** · Day {w['day']} ({ts(w['start'],'R')})")
+    return rows
+
+
 # ── board channel: server-wide events only (alliance events via the button) ──
 async def refresh_board(guild: discord.Guild):
     cfg = store.guild_config(guild.id)
@@ -2981,6 +3301,9 @@ async def refresh_board(guild: discord.Guild):
         rows += _invasion_board_rows(evs, start, end)
         # Order Workshop windows (Primordial Conflict, Battle Stage)
         rows += _workshop_board_rows(evs, start, end)
+        # Stormlands: Temple of Zeus battles + Storm Erosion awakenings
+        rows += _zeus_board_rows(evs, start, end)
+        rows += _erosion_board_rows(evs, start, end)
         if not rows:
             return f"__{title}__\n*(none)*"
         return f"__{title}__\n" + "\n".join(rows)

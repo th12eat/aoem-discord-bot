@@ -8,10 +8,22 @@ release (not every commit). HOWTO documents every command, its SCOPE (server vs
 alliance vs anyone), and which ROLES may use it.
 """
 
-VERSION = "1.23.0"
+VERSION = "1.24.0"
 
 CHANGELOG = f"""📜 **Catherine — v{VERSION}**
 _Broad, user-visible changes per release._
+
+**v1.24.0 — Real Stormlands notifications + Zeus/Erosion times**
+• **Stormlands (SL)** stages are now the real event (not DD placeholders): the
+  14-day zone progression (Eroded Wasteland → Forbidden Zone → Storm Eye → Oblivion
+  → **Temple of Zeus** Day 12 & 14), each with proper scoring (Storm Erosion, Storm
+  Incursion Hydra, Energy/Artisan cities, Altar offerings).
+• New **`/sl_zeus`** (R4): set each **Temple of Zeus** battle time — Battle I (Day 12)
+  & Finale (Day 14) — from the voted 4-hour slots or a custom `time:`. Shows on the
+  board + daily notice; alerts fire 1h before and at start.
+• New **`/sl_erosion`** (R4): set the **Storm Erosion** schedule — a daily UTC time +
+  cadence (every / every-other / 3-day) + contest day range (default Day 3→14). Each
+  active day pings 1h before and at start. `clear:True` turns it off.
 
 **v1.23.0 — TMG cap values + editable caps**
 • Updated the TMG daily point caps (Day 1 23k · Day 2–7 1.5M/1.5M/2M/3M/1M/2M) and
@@ -274,6 +286,8 @@ Pings @eRa8; any alliance's R4 may create/edit these. All adds live under one
 • `/event_add type:server` — announce an event **opening** (date range). *[Server]*
 • `/event_add type:custom scope:Server-wide` — recurring/one-time server event (+ duration). *[Server]*
 • `/event_add type:kvk` — multi-day KvK (TME/SL/BC/PC/DD); stages auto-derived from the start date. Add `url:` to link its live dashboard on the board. *[Server]*
+• `/sl_zeus battle: slot:|time:` — **Stormlands:** set a Temple of Zeus battle time (Battle I = Day 12, Finale = Day 14) from a voted 4h slot or a custom HH:MM. *[Server]*
+• `/sl_erosion time: cadence: start_day: end_day:` — **Stormlands:** set the Storm Erosion schedule (daily time + cadence + contest-day range; default every other day, Day 3→14). `clear:True` turns it off. *[Server]*
 • `/event_add type:maintenance` — server maintenance (date + time + duration). Pings @eRa8 with 🚨🔧 1h before, at start, and at end. *[Server]*
 • `/seed event:` — (re)seed **one** recurring event. Rotating series (City Clash,
   World Campaign, Treasure Hunt) take a `time:` from the 01/04/11/19 UTC pool and
