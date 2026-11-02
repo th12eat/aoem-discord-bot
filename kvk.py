@@ -94,10 +94,10 @@ KVK_DEFS = {
     },
     "SL": {
         "name": "Stormlands",
-        # 4-kingdom, 14-day contest (Mon→Sun×2) after a 2-day Matchmaking. Progressive
+        # 4-kingdom, 14-day contest (Mon→Sun×2) after a 1-day Matchmaking. Progressive
         # zone opening into a central Temple of Zeus, mirroring the Stormlands dashboard
         # (dashboards/stormlands.html SCHEDULE/STAGES). Contest Day N = this def's
-        # stage days; in-game rules call these Day 2→15 (they count the 2 MM days).
+        # stage days; in-game rules call these Day 2→15 (they count the matchmaking day).
         #
         # Two operator-set time systems ride on top of the stages (set via commands):
         #   • zeus     — the two Temple of Zeus battles (Day 12 & Day 14), each at a
@@ -123,7 +123,7 @@ KVK_DEFS = {
             "default_cadence": 2,                  # every 2 days (each Altar ~once/2 days)
         },
         "stages": [
-            {"key": "mm", "title": "Matchmaking", "days": 2,
+            {"key": "mm", "title": "Matchmaking", "days": 1,
              "summary": "Servers paired — scout & plan (no scoring yet)",
              "actionable": "Scout the other three kingdoms; line up rally leads. We're East/purple.",
              "prep": "Save speed-ups, troops and Storm Energy — the Eroded Wasteland opens {nextDate}"},
